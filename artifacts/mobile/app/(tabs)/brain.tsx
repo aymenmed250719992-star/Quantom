@@ -1,0 +1,1018 @@
+/**
+ * BRAIN — عقل الأيجنت ولوحة التحكم الكاملة
+ * الذاكرة | الاستراتيجية | الدروس المستفادة | صحة AI | تحكم كامل
+ */
+import { Feather } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Animated,
+  FlatList,
+  Platform,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+
+import { getApiBase, safeJson } from "@/constants/api";
+import { useColors } from "@/hooks/useColors";
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface BrainMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  provider?: string;
+  executed_command?: string | null;
+  timestamp: string;
+  metadata?: {
+    type?: string;    // "trade_auto" | undefined
+    event?: string;   // "open" | "close_win" | "close_loss"
+    symbol?: string;
+    pnl?: number | null;
+  };
+}
+
+interface AgentMemory {
+  strategy: {
+    current: string;
+    confidence: number;
+    goal: string;
+    overrides: Record<string, any>;
+  };
+  streaks: {
+    consecutive_wins: number;
+    consecutive_losses: number;
+    last_results: boolean[];
+    emergency_halted: boolean;
+  };
+  patterns: { pattern: string; win_rate: number; total: number }[];
+  recent_thoughts: string[];
+  lessons: { lesson: string; symbol: string; outcome: string; created_at: string; market_condition: string }[];
+  ai_status: {
+    active_provider: string | null;
+    available_keys: number;
+    total_keys: number;
+    keys: {
+      provider: string; label: string; available: boolean; exhausted: boolean;
+      hours_remaining: number; total_calls: number; success_calls: number;
+      failed_calls: number; model_name: string;
+    }[];
+  };
+  settings: {
+    target_win_rate: number;
+    current_threshold: number;
+    reflection_interval_min: number;
+  };
+}
+
+const STRATEGIES = [
+  { id: "mean_reversion",    label: "Mean Rev",    icon: "refresh-cw",  color: "#3B82F6", desc: "شراء عند الانخفاض — كلاسيكي" },
+  { id: "trend_following",   label: "Trend",       icon: "trending-up", color: "#10B981", desc: "اتباع الاتجاه الصاعد" },
+  { id: "momentum_breakout", label: "Breakout",    icon: "zap",         color: "#F59E0B", desc: "اختراق مستويات القاومة" },
+  { id: "scalping",          label: "Scalping",    icon: "fast-forward", color: "#8B5CF6", desc: "صفقات سريعة وصغيرة" },
+  { id: "conservative",      label: "Conservative",icon: "shield",      color: "#6B7280", desc: "حماية رأس المال أولاً" },
+];
+
+// ── Helper components ─────────────────────────────────────────────────────────
+
+function SectionHeader({ title, icon, color }: { title: string; icon: string; color: string }) {
+  const colors = useColors();
+  return (
+    <View style={sec.row}>
+      <View style={[sec.dot, { backgroundColor: color }]} />
+      <Text style={[sec.title, { color: colors.mutedForeground }]}>{title}</Text>
+    </View>
+  );
+}
+const sec = StyleSheet.create({
+  row:   { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10, marginTop: 18, marginHorizontal: 16 },
+  dot:   { width: 6, height: 6, borderRadius: 3 },
+  title: { fontSize: 10, fontWeight: "700", letterSpacing: 1.2, textTransform: "uppercase" },
+});
+
+function Card({ children, style }: { children: React.ReactNode; style?: any }) {
+  const colors = useColors();
+  return (
+    <View style={[{ backgroundColor: colors.card, borderRadius: 14, borderWidth: 1, borderColor: colors.border, marginHorizontal: 16, padding: 14 }, style]}>
+      {children}
+    </View>
+  );
+}
+
+function ResultDot({ win }: { win: boolean }) {
+  return (
+    <View style={[rd.dot, { backgroundColor: win ? "#10B981" : "#EF4444" }]} />
+  );
+}
+const rd = StyleSheet.create({ dot: { width: 8, height: 8, borderRadius: 4 } });
+
+// ── Main Screen ───────────────────────────────────────────────────────────────
+
+const BRAIN_WELCOME: BrainMessage = {
+  id: "brain_welcome",
+  role: "assistant",
+  content: "مرحباً — أنا عقل البوت. أخبرني ماذا تريد:\n\n• \"غيّر الاستراتيجية إلى Scalping\"\n• \"أوقف البوت\"\n• \"ارفع حد الثقة إلى 70%\"\n• \"ما هي الصفقات الحالية؟\"\n• \"ابدأ واشرح لي منطقك\"\n\nأي سؤال أو أمر — بالعربية أو الإنجليزية!",
+  timestamp: new Date().toISOString(),
+};
+
+function makeBrainId() {
+  return "b_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+const PROVIDER_COLORS: Record<string, string> = {
+  gemini: "#4285F4", openai: "#10A37F", claude: "#D97706",
+  grok: "#6366F1", custom: "#7C3AED",
+};
+
+export default function BrainScreen() {
+  const insets = useSafeAreaInsets();
+  const colors = useColors();
+
+  const [data, setData]       = useState<AgentMemory | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [cmdLoading, setCmdLoading] = useState<string | null>(null);
+  const [msgMap, setMsgMap]   = useState<Record<string, string>>({});
+  const [goalInput, setGoalInput]       = useState("");
+  const [editGoal, setEditGoal]         = useState(false);
+
+  // ── Brain Chat state ──────────────────────────────────────────────────────
+  const [chatMessages, setChatMessages] = useState<BrainMessage[]>([BRAIN_WELCOME]);
+  const [chatInput, setChatInput]       = useState("");
+  const [chatLoading, setChatLoading]   = useState(false);
+  const chatListRef = useRef<FlatList>(null);
+  const bottomPad = Platform.OS === "web" ? 90 : insets.bottom;
+
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+
+  const showMsg = (key: string, msg: string) => {
+    setMsgMap(p => ({ ...p, [key]: msg }));
+    setTimeout(() => setMsgMap(p => { const n = { ...p }; delete n[key]; return n; }), 3000);
+  };
+
+  const load = useCallback(async () => {
+    try {
+      const r = await fetch(`${getApiBase()}/agent/memory`);
+      const d = await safeJson(r);
+      if (d) {
+        setData(d);
+        if (d?.strategy?.goal) setGoalInput(d.strategy.goal);
+      }
+    } catch { /* ignore */ }
+    setLoading(false);
+    setRefreshing(false);
+  }, []);
+
+  // ── Load brain conversation history from DB ───────────────────────────────
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch(`${getApiBase()}/conversations?screen=brain&limit=60`);
+        const d = await safeJson(r);
+        if (d) {
+          if (d.messages && d.messages.length > 0) {
+            const hist: BrainMessage[] = d.messages.map((m: any) => ({
+              id: m.id ?? makeBrainId(),
+              role: m.role as "user" | "assistant",
+              content: m.content,
+              provider: m.provider || undefined,
+              executed_command: m.metadata?.executed_command ?? null,
+              timestamp: m.created_at ?? new Date().toISOString(),
+              metadata: m.metadata ?? undefined,
+            }));
+            setChatMessages([BRAIN_WELCOME, ...hist]);
+          }
+        }
+      } catch { /* ignore */ }
+    })();
+  }, []);
+
+  // ── Send message to brain ─────────────────────────────────────────────────
+  const sendBrainMessage = async (text?: string) => {
+    const message = (text ?? chatInput).trim();
+    if (!message || chatLoading) return;
+    setChatInput("");
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+    const userMsg: BrainMessage = {
+      id: makeBrainId(),
+      role: "user",
+      content: message,
+      timestamp: new Date().toISOString(),
+    };
+    setChatMessages(prev => [userMsg, ...prev]);
+    setChatLoading(true);
+
+    try {
+      const res = await fetch(`${getApiBase()}/brain/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message }),
+      });
+      const d = await safeJson(res);
+      const botMsg: BrainMessage = {
+        id: makeBrainId(),
+        role: "assistant",
+        content: d?.response ?? "لم يتم استلام رد.",
+        provider: d?.provider,
+        executed_command: d?.executed_command ?? null,
+        timestamp: new Date().toISOString(),
+      };
+      setChatMessages(prev => [botMsg, ...prev]);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      // Refresh memory panel if a command was executed
+      if (d?.executed_command) {
+        setTimeout(() => load(), 600);
+      }
+    } catch {
+      setChatMessages(prev => [{
+        id: makeBrainId(),
+        role: "assistant",
+        content: "⚡ تعذّر الاتصال — تأكد من أن البوت يعمل في التطبيق، ثم أعد المحاولة.",
+        timestamp: new Date().toISOString(),
+      }, ...prev]);
+    }
+    setChatLoading(false);
+  };
+
+  useEffect(() => { load(); }, [load]);
+
+  // Pulse animation for emergency halt
+  useEffect(() => {
+    if (data?.streaks?.emergency_halted) {
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, { toValue: 0.4, duration: 600, useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1, duration: 600, useNativeDriver: true }),
+        ])
+      ).start();
+    } else {
+      pulseAnim.setValue(1);
+    }
+  }, [data?.streaks?.emergency_halted]);
+
+  const sendCommand = async (command: string, value?: string, threshold?: number) => {
+    setCmdLoading(command + (value ?? ""));
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    try {
+      const body: any = { command };
+      if (value !== undefined)     body.value = value;
+      if (threshold !== undefined) body.threshold = threshold;
+      const r = await fetch(`${getApiBase()}/agent/command`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const d = await safeJson(r);
+      if (!d) { showMsg(command, "❌ لا يمكن الوصول للسيرفر"); }
+      else if (d.success) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        showMsg(command, `✅ ${d.message ?? "تم"}`);
+        await load();
+      } else {
+        showMsg(command, `❌ ${d.error ?? "خطأ"}`);
+      }
+    } catch (e: any) {
+      showMsg(command, `❌ ${e.message}`);
+    }
+    setCmdLoading(null);
+  };
+
+  const isLoading = (key: string) => cmdLoading === key;
+
+  if (loading) {
+    return (
+      <View style={[s.center, { backgroundColor: colors.background }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={[s.loadTxt, { color: colors.mutedForeground }]}>جارٍ تحميل ذاكرة الأيجنت...</Text>
+      </View>
+    );
+  }
+
+  const st     = data?.strategy;
+  const sk     = data?.streaks;
+  const ai     = data?.ai_status;
+  const cfg    = data?.settings;
+  const halted = sk?.emergency_halted ?? false;
+  const curStrategy = STRATEGIES.find(s => s.id === (st?.current ?? "mean_reversion")) ?? STRATEGIES[0];
+
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.background }}>
+    <ScrollView
+      style={{ flex: 1 }}
+      contentContainerStyle={{ paddingBottom: 8 }}
+      showsVerticalScrollIndicator={false}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={colors.primary} />}
+    >
+      {/* ── Header ── */}
+      <View style={[s.header, { paddingTop: insets.top + 14 }]}>
+        <View style={s.headerLeft}>
+          <Text style={[s.headerTitle, { color: colors.foreground }]}>AGENT BRAIN</Text>
+          <Text style={[s.headerSub, { color: colors.mutedForeground }]}>
+            ذاكرة · تحكم · استراتيجية · AI
+          </Text>
+        </View>
+        <Pressable onPress={() => { setRefreshing(true); load(); }} style={[s.refreshBtn, { borderColor: colors.border }]}>
+          <Feather name="refresh-cw" size={15} color={colors.mutedForeground} />
+        </Pressable>
+      </View>
+
+      {/* ── Emergency Halt Banner ── */}
+      {halted && (
+        <Animated.View style={[s.haltBanner, { opacity: pulseAnim }]}>
+          <Feather name="alert-octagon" size={18} color="#EF4444" />
+          <View style={{ flex: 1 }}>
+            <Text style={s.haltTitle}>الأيجنت متوقف طارئاً</Text>
+            <Text style={s.haltSub}>{sk?.consecutive_losses} خسائر متتالية — اضغط "استئناف" للمتابعة</Text>
+          </View>
+          <Pressable
+            style={s.resumeBtn}
+            onPress={() => sendCommand("resume")}
+            disabled={!!cmdLoading}
+          >
+            {isLoading("resume") ? <ActivityIndicator size="small" color="#fff" /> : <Text style={s.resumeBtnTxt}>استئناف</Text>}
+          </Pressable>
+        </Animated.View>
+      )}
+
+      {/* ── State Summary ── */}
+      <SectionHeader title="حالة الأيجنت" icon="cpu" color="#3B82F6" />
+      <Card>
+        <View style={s.stateRow}>
+          {/* Strategy */}
+          <View style={[s.stateBox, { backgroundColor: `${curStrategy.color}14`, borderColor: `${curStrategy.color}30` }]}>
+            <Feather name={curStrategy.icon as any} size={16} color={curStrategy.color} />
+            <Text style={[s.stateLabel, { color: colors.mutedForeground }]}>الاستراتيجية</Text>
+            <Text style={[s.stateValue, { color: curStrategy.color }]}>{curStrategy.label}</Text>
+            <Text style={[s.stateConf, { color: colors.mutedForeground }]}>
+              ثقة {((st?.confidence ?? 1) * 100).toFixed(0)}%
+            </Text>
+          </View>
+
+          {/* Streak */}
+          <View style={[s.stateBox, {
+            backgroundColor: (sk?.consecutive_losses ?? 0) > 0 ? "#EF444414" : "#10B98114",
+            borderColor:     (sk?.consecutive_losses ?? 0) > 0 ? "#EF444430" : "#10B98130",
+          }]}>
+            <Feather
+              name={(sk?.consecutive_losses ?? 0) > 0 ? "trending-down" : "trending-up"}
+              size={16}
+              color={(sk?.consecutive_losses ?? 0) > 0 ? "#EF4444" : "#10B981"}
+            />
+            <Text style={[s.stateLabel, { color: colors.mutedForeground }]}>السلسلة</Text>
+            <Text style={[s.stateValue, { color: (sk?.consecutive_losses ?? 0) > 0 ? "#EF4444" : "#10B981" }]}>
+              {(sk?.consecutive_losses ?? 0) > 0
+                ? `🔴 ×${sk?.consecutive_losses}`
+                : `🟢 ×${sk?.consecutive_wins}`}
+            </Text>
+            <View style={{ flexDirection: "row", gap: 3, marginTop: 2 }}>
+              {(sk?.last_results ?? []).slice(-8).map((r, i) => <ResultDot key={i} win={r} />)}
+            </View>
+          </View>
+
+          {/* Target */}
+          <View style={[s.stateBox, { backgroundColor: `${colors.primary}14`, borderColor: `${colors.primary}30` }]}>
+            <Feather name="target" size={16} color={colors.primary} />
+            <Text style={[s.stateLabel, { color: colors.mutedForeground }]}>الهدف</Text>
+            <Text style={[s.stateValue, { color: colors.primary }]}>{cfg?.target_win_rate?.toFixed(0)}%</Text>
+            <Text style={[s.stateConf, { color: colors.mutedForeground }]}>
+              حد {cfg?.current_threshold}%
+            </Text>
+          </View>
+        </View>
+
+        {/* Last results row */}
+        {(sk?.last_results?.length ?? 0) > 0 && (
+          <View style={{ flexDirection: "row", gap: 4, marginTop: 10, alignItems: "center" }}>
+            <Text style={[s.smallLabel, { color: colors.mutedForeground }]}>آخر نتائج:</Text>
+            {(sk?.last_results ?? []).slice(-10).map((r, i) => (
+              <View key={i} style={[s.resultChip, { backgroundColor: r ? "#10B98122" : "#EF444422", borderColor: r ? "#10B98155" : "#EF444455" }]}>
+                <Text style={{ fontSize: 9, color: r ? "#10B981" : "#EF4444", fontWeight: "700" }}>{r ? "W" : "L"}</Text>
+              </View>
+            ))}
+          </View>
+        )}
+      </Card>
+
+      {/* ── Goal ── */}
+      <SectionHeader title="هدف الأيجنت" icon="flag" color="#10B981" />
+      <Card>
+        {editGoal ? (
+          <View style={{ gap: 8 }}>
+            <TextInput
+              style={[s.goalInput, { color: colors.foreground, borderColor: colors.primary, backgroundColor: colors.muted }]}
+              value={goalInput}
+              onChangeText={setGoalInput}
+              placeholder="أدخل هدفاً جديداً للأيجنت..."
+              placeholderTextColor={colors.mutedForeground}
+              multiline
+            />
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              <Pressable
+                style={[s.goalBtn, { backgroundColor: colors.primary, flex: 1 }]}
+                onPress={async () => {
+                  await sendCommand("set_goal", goalInput);
+                  setEditGoal(false);
+                }}
+              >
+                <Text style={s.goalBtnTxt}>حفظ</Text>
+              </Pressable>
+              <Pressable style={[s.goalBtn, { backgroundColor: colors.muted, borderWidth: 1, borderColor: colors.border }]} onPress={() => setEditGoal(false)}>
+                <Text style={[s.goalBtnTxt, { color: colors.mutedForeground }]}>إلغاء</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : (
+          <Pressable onPress={() => setEditGoal(true)} style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
+            <Feather name="flag" size={14} color={colors.primary} style={{ marginTop: 2 }} />
+            <Text style={[s.goalText, { color: colors.foreground, flex: 1 }]}>{st?.goal || "لم يُحدَّد هدف"}</Text>
+            <Feather name="edit-2" size={13} color={colors.mutedForeground} />
+          </Pressable>
+        )}
+      </Card>
+
+      {/* ── Strategy Control ── */}
+      <SectionHeader title="اختيار الاستراتيجية" icon="sliders" color="#F59E0B" />
+      <Card style={{ gap: 8 }}>
+        <View style={s.stratGrid}>
+          {STRATEGIES.map(strat => {
+            const active = strat.id === st?.current;
+            return (
+              <Pressable
+                key={strat.id}
+                onPress={() => sendCommand("set_strategy", strat.id)}
+                disabled={!!cmdLoading}
+                style={[s.stratBtn, {
+                  backgroundColor: active ? `${strat.color}18` : colors.muted,
+                  borderColor:     active ? strat.color : colors.border,
+                  borderWidth:     active ? 2 : 1,
+                }]}
+              >
+                {isLoading("set_strategy" + strat.id) ? (
+                  <ActivityIndicator size="small" color={strat.color} />
+                ) : (
+                  <Feather name={strat.icon as any} size={14} color={active ? strat.color : colors.mutedForeground} />
+                )}
+                <Text style={[s.stratLabel, { color: active ? strat.color : colors.foreground, fontWeight: active ? "700" : "500" }]}>
+                  {strat.label}
+                </Text>
+                {active && <View style={[s.activeDot, { backgroundColor: strat.color }]} />}
+              </Pressable>
+            );
+          })}
+        </View>
+        <Text style={[s.stratDesc, { color: colors.mutedForeground }]}>
+          {curStrategy.desc}
+        </Text>
+        {msgMap["set_strategy"] && (
+          <Text style={[s.msg, { color: msgMap["set_strategy"].startsWith("✅") ? colors.primary : "#EF4444" }]}>
+            {msgMap["set_strategy"]}
+          </Text>
+        )}
+      </Card>
+
+      {/* ── Threshold Controls ── */}
+      <SectionHeader title="معاملات الأيجنت" icon="sliders" color="#8B5CF6" />
+      <Card style={{ gap: 10 }}>
+        {/* Confidence Threshold */}
+        <View>
+          <View style={s.paramRow}>
+            <Text style={[s.paramLabel, { color: colors.foreground }]}>حد الثقة (Confidence)</Text>
+            <Text style={[s.paramValue, { color: colors.primary }]}>{cfg?.current_threshold}%</Text>
+          </View>
+          <View style={s.thresholdBtns}>
+            {[40, 50, 55, 60, 65, 70, 75, 80].map(v => {
+              const active = v === cfg?.current_threshold;
+              return (
+                <Pressable
+                  key={v}
+                  onPress={() => sendCommand("set_threshold", undefined, v)}
+                  disabled={!!cmdLoading}
+                  style={[s.tBtn, {
+                    backgroundColor: active ? colors.primary : colors.muted,
+                    borderColor:     active ? colors.primary : colors.border,
+                  }]}
+                >
+                  <Text style={[s.tBtnTxt, { color: active ? "#fff" : colors.mutedForeground }]}>{v}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          {msgMap["set_threshold"] && (
+            <Text style={[s.msg, { color: msgMap["set_threshold"].startsWith("✅") ? colors.primary : "#EF4444" }]}>
+              {msgMap["set_threshold"]}
+            </Text>
+          )}
+        </View>
+
+        <View style={[s.divider, { backgroundColor: colors.border }]} />
+
+        {/* Target Win Rate */}
+        <View>
+          <View style={s.paramRow}>
+            <Text style={[s.paramLabel, { color: colors.foreground }]}>هدف الفوز (Win Rate)</Text>
+            <Text style={[s.paramValue, { color: "#10B981" }]}>{cfg?.target_win_rate?.toFixed(0)}%</Text>
+          </View>
+          <View style={s.thresholdBtns}>
+            {[55, 60, 65, 70, 75, 80].map(v => {
+              const active = v === (cfg?.target_win_rate ?? 65);
+              return (
+                <Pressable
+                  key={v}
+                  onPress={() => sendCommand("set_win_rate", undefined, v)}
+                  disabled={!!cmdLoading}
+                  style={[s.tBtn, {
+                    backgroundColor: active ? "#10B981" : colors.muted,
+                    borderColor:     active ? "#10B981" : colors.border,
+                  }]}
+                >
+                  <Text style={[s.tBtnTxt, { color: active ? "#fff" : colors.mutedForeground }]}>{v}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          {msgMap["set_win_rate"] && (
+            <Text style={[s.msg, { color: msgMap["set_win_rate"].startsWith("✅") ? "#10B981" : "#EF4444" }]}>
+              {msgMap["set_win_rate"]}
+            </Text>
+          )}
+        </View>
+      </Card>
+
+      {/* ── Quick Actions ── */}
+      <SectionHeader title="إجراءات سريعة" icon="zap" color="#EF4444" />
+      <Card style={{ gap: 8 }}>
+        <View style={s.actionRow}>
+          <Pressable
+            style={[s.actionBtn, { backgroundColor: "#EF444418", borderColor: "#EF444444" }]}
+            onPress={() => Alert.alert(
+              "إيقاف طارئ",
+              "سيتوقف الأيجنت فوراً ويحتاج إعادة تشغيل يدوية. هل أنت متأكد؟",
+              [
+                { text: "إلغاء", style: "cancel" },
+                { text: "إيقاف", style: "destructive", onPress: () => sendCommand("halt") },
+              ]
+            )}
+            disabled={!!cmdLoading || halted}
+          >
+            {isLoading("halt") ? <ActivityIndicator size="small" color="#EF4444" /> : <Feather name="alert-octagon" size={14} color="#EF4444" />}
+            <Text style={[s.actionBtnTxt, { color: "#EF4444" }]}>إيقاف طارئ</Text>
+          </Pressable>
+
+          <Pressable
+            style={[s.actionBtn, { backgroundColor: "#10B98118", borderColor: "#10B98144" }]}
+            onPress={() => sendCommand("resume")}
+            disabled={!!cmdLoading || !halted}
+          >
+            {isLoading("resume") ? <ActivityIndicator size="small" color="#10B981" /> : <Feather name="play" size={14} color="#10B981" />}
+            <Text style={[s.actionBtnTxt, { color: "#10B981" }]}>استئناف</Text>
+          </Pressable>
+        </View>
+
+        <View style={s.actionRow}>
+          <Pressable
+            style={[s.actionBtn, { backgroundColor: `${colors.primary}14`, borderColor: `${colors.primary}44`, flex: 1 }]}
+            onPress={() => {
+              Alert.alert("إعادة ضبط الأنماط", "سيتم مسح نقاط الأنماط وبدء التعلم من جديد.", [
+                { text: "إلغاء", style: "cancel" },
+                { text: "إعادة ضبط", onPress: () => sendCommand("reset_patterns") },
+              ]);
+            }}
+            disabled={!!cmdLoading}
+          >
+            <Feather name="rotate-ccw" size={14} color={colors.primary} />
+            <Text style={[s.actionBtnTxt, { color: colors.primary }]}>إعادة ضبط الأنماط</Text>
+          </Pressable>
+        </View>
+
+        {msgMap["halt"]   && <Text style={[s.msg, { color: "#EF4444" }]}>{msgMap["halt"]}</Text>}
+        {msgMap["resume"] && <Text style={[s.msg, { color: "#10B981" }]}>{msgMap["resume"]}</Text>}
+        {msgMap["reset_patterns"] && <Text style={[s.msg, { color: colors.primary }]}>{msgMap["reset_patterns"]}</Text>}
+      </Card>
+
+      {/* ── AI Providers Health ── */}
+      <SectionHeader title="صحة مزودي الذكاء الاصطناعي" icon="cpu" color="#4285F4" />
+      <Card style={{ gap: 6 }}>
+        {(!ai?.keys || ai.keys.length === 0) ? (
+          <View style={s.emptyBox}>
+            <Feather name="cpu" size={24} color={colors.mutedForeground} />
+            <Text style={[s.emptyTxt, { color: colors.mutedForeground }]}>لا يوجد مزود AI مضاف</Text>
+            <Text style={[s.emptySub, { color: colors.mutedForeground }]}>أضف مفاتيح API من صفحة CONFIG</Text>
+          </View>
+        ) : (
+          ai.keys.map((k, i) => {
+            const color = PROVIDER_COLORS[k.provider] ?? "#6B7280";
+            const successRate = k.total_calls > 0 ? Math.round(k.success_calls / k.total_calls * 100) : 0;
+            return (
+              <View key={i} style={[s.aiKeyRow, { borderColor: k.available ? `${color}44` : colors.border, backgroundColor: k.available ? `${color}08` : colors.muted }]}>
+                <View style={[s.aiDot, { backgroundColor: k.available ? color : colors.mutedForeground }]} />
+                <View style={{ flex: 1 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                    <Text style={[s.aiKeyLabel, { color: colors.foreground }]}>{k.label}</Text>
+                    <View style={[s.aiProvBadge, { backgroundColor: `${color}20` }]}>
+                      <Text style={[s.aiProvBadgeTxt, { color }]}>{k.provider}</Text>
+                    </View>
+                  </View>
+                  <Text style={[s.aiKeyModel, { color: colors.mutedForeground }]} numberOfLines={1}>{k.model_name}</Text>
+                  <View style={s.aiStats}>
+                    <Text style={[s.aiStat, { color: colors.mutedForeground }]}>📊 {k.total_calls} استدعاء</Text>
+                    {k.total_calls > 0 && <Text style={[s.aiStat, { color: successRate > 80 ? "#10B981" : "#F59E0B" }]}>✅ {successRate}%</Text>}
+                    {k.failed_calls > 0 && <Text style={[s.aiStat, { color: "#EF4444" }]}>❌ {k.failed_calls}</Text>}
+                  </View>
+                </View>
+                <View style={{ alignItems: "flex-end", gap: 4 }}>
+                  <View style={[s.availBadge, { backgroundColor: k.available ? "#10B98122" : "#EF444422" }]}>
+                    <Text style={[s.availBadgeTxt, { color: k.available ? "#10B981" : "#EF4444" }]}>
+                      {k.available ? "نشط" : k.hours_remaining > 0 ? `${k.hours_remaining.toFixed(1)}h` : "محدود"}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            );
+          })
+        )}
+        <View style={[s.aiSummary, { borderColor: colors.border }]}>
+          <Text style={[s.aiSummaryTxt, { color: colors.mutedForeground }]}>
+            {ai?.available_keys ?? 0}/{ai?.total_keys ?? 0} مزود نشط
+            {(ai?.available_keys ?? 0) === 0 && " — الأيجنت يعمل بقواعد بديلة"}
+          </Text>
+        </View>
+      </Card>
+
+      {/* ── Pattern Scores ── */}
+      {(data?.patterns?.length ?? 0) > 0 && (
+        <>
+          <SectionHeader title="أداء الأنماط المتعلَّمة" icon="bar-chart-2" color="#F59E0B" />
+          <Card style={{ gap: 6 }}>
+            {data!.patterns.map((p, i) => {
+              const wr = Math.round(p.win_rate);
+              const color = wr >= 65 ? "#10B981" : wr >= 50 ? "#F59E0B" : "#EF4444";
+              return (
+                <View key={i} style={s.patternRow}>
+                  <Text style={[s.patternName, { color: colors.foreground }]} numberOfLines={1}>{p.pattern}</Text>
+                  <View style={s.patternBarWrap}>
+                    <View style={[s.patternBar, { width: `${wr}%`, backgroundColor: color }]} />
+                  </View>
+                  <Text style={[s.patternWr, { color }]}>{wr}%</Text>
+                  <Text style={[s.patternTotal, { color: colors.mutedForeground }]}>/{p.total}</Text>
+                </View>
+              );
+            })}
+          </Card>
+        </>
+      )}
+
+      {/* ── Recent Lessons ── */}
+      <SectionHeader title="الدروس المستفادة" icon="book-open" color="#10B981" />
+      {(!data?.lessons || data.lessons.length === 0) ? (
+        <Card>
+          <View style={s.emptyBox}>
+            <Feather name="book-open" size={24} color={colors.mutedForeground} />
+            <Text style={[s.emptyTxt, { color: colors.mutedForeground }]}>لا توجد دروس بعد</Text>
+            <Text style={[s.emptySub, { color: colors.mutedForeground }]}>ستُحفظ الدروس تلقائياً بعد كل صفقة</Text>
+          </View>
+        </Card>
+      ) : (
+        <View style={{ gap: 6, marginHorizontal: 16 }}>
+          {data!.lessons.slice(0, 12).map((l, i) => {
+            const win = l.outcome === "win";
+            const isStrategic = l.lesson?.startsWith("[STRATEGIC INSIGHT]");
+            return (
+              <View key={i} style={[s.lessonRow, {
+                borderColor: isStrategic ? "#8B5CF644" : (win ? "#10B98133" : "#EF444433"),
+                backgroundColor: isStrategic ? "#8B5CF608" : (win ? "#10B98108" : "#EF444408"),
+              }]}>
+                <Text style={s.lessonIcon}>{isStrategic ? "💡" : win ? "✅" : "📌"}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={[s.lessonTxt, { color: colors.foreground }]} numberOfLines={3}>
+                    {l.lesson?.replace("[STRATEGIC INSIGHT] ", "") ?? "—"}
+                  </Text>
+                  <View style={s.lessonMeta}>
+                    {l.symbol && l.symbol !== "PORTFOLIO" && (
+                      <Text style={[s.lessonMetaTxt, { color: colors.primary }]}>{l.symbol}</Text>
+                    )}
+                    <Text style={[s.lessonMetaTxt, { color: colors.mutedForeground }]}>
+                      {l.created_at ? new Date(l.created_at).toLocaleDateString("ar-DZ") : ""}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            );
+          })}
+        </View>
+      )}
+
+      {/* ── Internal Thoughts Feed ── */}
+      {(data?.recent_thoughts?.length ?? 0) > 0 && (
+        <>
+          <SectionHeader title="سجل أفكار الجلسة" icon="terminal" color="#6366F1" />
+          <Card style={{ gap: 4 }}>
+            {data!.recent_thoughts.slice().reverse().slice(0, 8).map((t, i) => (
+              <View key={i} style={[s.thoughtRow, { borderLeftColor: "#6366F1", backgroundColor: colors.muted }]}>
+                <Text style={[s.thoughtTxt, { color: colors.foreground }]}>{t}</Text>
+              </View>
+            ))}
+          </Card>
+        </>
+      )}
+
+      {/* ── BRAIN CHAT — Natural Language Interface ── */}
+      <SectionHeader title="تحدث مع العقل مباشرة" icon="message-square" color="#6366F1" />
+    </ScrollView>
+
+    {/* Brain Chat — fixed at bottom as KeyboardAvoidingView */}
+    <KeyboardAvoidingView
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      keyboardVerticalOffset={Platform.OS === "web" ? 84 : 0}
+      style={{ backgroundColor: colors.background }}
+    >
+      {/* Chat messages list */}
+      <View style={[s.chatContainer, { borderColor: colors.border, backgroundColor: colors.background }]}>
+        <FlatList
+          ref={chatListRef}
+          data={chatMessages}
+          inverted
+          keyExtractor={m => m.id}
+          keyboardDismissMode="interactive"
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+          style={{ maxHeight: 260 }}
+          contentContainerStyle={{ paddingHorizontal: 12, paddingTop: 8, gap: 6 }}
+          ListHeaderComponent={chatLoading ? (
+            <View style={[s.chatBubble, s.chatBotBubble, { backgroundColor: colors.card, borderColor: colors.border }]}>
+              <ActivityIndicator size="small" color="#6366F1" />
+              <Text style={[s.chatTyping, { color: colors.mutedForeground }]}>العقل يفكر...</Text>
+            </View>
+          ) : null}
+          renderItem={({ item }) => {
+            const isUser = item.role === "user";
+            const isTradeAuto = item.metadata?.type === "trade_auto";
+            const tradeEvent  = item.metadata?.event ?? "";
+            const provColor   = item.provider ? (PROVIDER_COLORS[item.provider] ?? "#6366F1") : "#6366F1";
+
+            // ── Trade auto-commentary card ─────────────────────────────────
+            if (isTradeAuto) {
+              const tradeAccent =
+                tradeEvent === "open"       ? "#6366F1" :
+                tradeEvent === "close_win"  ? "#10B981" : "#EF4444";
+              const tradeIcon =
+                tradeEvent === "open"       ? "trending-up" :
+                tradeEvent === "close_win"  ? "check-circle" : "alert-circle";
+              const tradeLabel =
+                tradeEvent === "open"       ? "تحليل دخول" :
+                tradeEvent === "close_win"  ? "تقرير ربح"  : "تحليل خسارة";
+              const sym = (item.metadata?.symbol ?? "").replace("/USDT", "");
+              const pnl = item.metadata?.pnl;
+
+              return (
+                <View style={{ marginHorizontal: 10, marginVertical: 5 }}>
+                  <View style={{
+                    borderRadius: 14,
+                    borderLeftWidth: 3,
+                    borderLeftColor: tradeAccent,
+                    backgroundColor: `${tradeAccent}11`,
+                    padding: 12,
+                    gap: 6,
+                  }}>
+                    {/* Header row */}
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                      <View style={{
+                        width: 22, height: 22, borderRadius: 11,
+                        backgroundColor: `${tradeAccent}22`,
+                        alignItems: "center", justifyContent: "center",
+                      }}>
+                        <Feather name={tradeIcon as any} size={11} color={tradeAccent} />
+                      </View>
+                      <Text style={{ fontSize: 11, fontWeight: "700", color: tradeAccent }}>
+                        {tradeLabel}{sym ? ` — ${sym}` : ""}
+                      </Text>
+                      {pnl != null && (
+                        <Text style={{
+                          fontSize: 10, fontWeight: "700",
+                          color: pnl >= 0 ? "#10B981" : "#EF4444",
+                          marginLeft: "auto",
+                        }}>
+                          {pnl >= 0 ? "+" : ""}{pnl.toFixed(4)} USDT
+                        </Text>
+                      )}
+                    </View>
+                    {/* Content — skip header line (first line already shown) */}
+                    <Text style={{ fontSize: 12, color: colors.foreground, lineHeight: 18 }}>
+                      {item.content.replace(/^[^\n]+\n\n/, "")}
+                    </Text>
+                    {/* Footer */}
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                      <Feather name="clock" size={8} color={colors.mutedForeground} />
+                      <Text style={{ fontSize: 9, color: colors.mutedForeground }}>
+                        {new Date(item.timestamp).toLocaleTimeString("ar-SA", { hour: "2-digit", minute: "2-digit" })}
+                      </Text>
+                      <View style={{ width: 3, height: 3, borderRadius: 2, backgroundColor: tradeAccent, marginLeft: "auto" }} />
+                      <Text style={{ fontSize: 9, color: tradeAccent, fontWeight: "700" }}>تلقائي</Text>
+                    </View>
+                  </View>
+                </View>
+              );
+            }
+
+            // ── Normal chat bubble ─────────────────────────────────────────
+            return (
+              <View style={[s.chatMsgWrap, isUser ? s.chatUserWrap : s.chatBotWrap]}>
+                {!isUser && (
+                  <View style={[s.chatAvatar, { backgroundColor: `${provColor}22` }]}>
+                    <Feather name="cpu" size={9} color={provColor} />
+                  </View>
+                )}
+                <View style={{ maxWidth: "80%", gap: 3 }}>
+                  <View style={[
+                    s.chatBubble,
+                    isUser
+                      ? [s.chatUserBubble, { backgroundColor: "#6366F1" }]
+                      : [s.chatBotBubble, { backgroundColor: colors.card, borderColor: colors.border }],
+                  ]}>
+                    <Text style={[s.chatBubbleTxt, { color: isUser ? "#fff" : colors.foreground }]}>
+                      {item.content}
+                    </Text>
+                  </View>
+                  {item.executed_command && (
+                    <View style={s.cmdBadge}>
+                      <Feather name="check-circle" size={9} color="#10B981" />
+                      <Text style={s.cmdBadgeTxt}>✅ نُفِّذ: {item.executed_command}</Text>
+                    </View>
+                  )}
+                  {!isUser && item.provider && item.provider !== "rule-based" && (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 3, marginLeft: 4 }}>
+                      <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: provColor }} />
+                      <Text style={{ fontSize: 9, color: provColor, fontWeight: "700" }}>{item.provider}</Text>
+                    </View>
+                  )}
+                </View>
+              </View>
+            );
+          }}
+        />
+
+        {/* Quick command chips */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={{ paddingVertical: 6, borderTopWidth: 1, borderTopColor: colors.border }}
+          contentContainerStyle={{ paddingHorizontal: 12, gap: 6 }}
+        >
+          {[
+            "كيف أداؤك الآن؟",
+            "غيّر إلى Scalping",
+            "ارفع حد الثقة إلى 65%",
+            "لماذا لم تفتح صفقات؟",
+            "أوقف البوت",
+            "استئناف العمل",
+            "ما أفضل صفقة اليوم؟",
+          ].map(chip => (
+            <Pressable
+              key={chip}
+              onPress={() => sendBrainMessage(chip)}
+              style={[s.chip, { backgroundColor: `#6366F118`, borderColor: `#6366F144` }]}
+            >
+              <Text style={[s.chipTxt, { color: "#6366F1" }]}>{chip}</Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+
+        {/* Input row */}
+        <View style={[s.chatInputRow, { borderTopColor: colors.border, paddingBottom: bottomPad + 6 }]}>
+          <TextInput
+            style={[s.chatInput, { backgroundColor: colors.card, color: colors.foreground, borderColor: colors.border }]}
+            placeholder="وجّه العقل أو اسأله أي شيء..."
+            placeholderTextColor={colors.mutedForeground}
+            value={chatInput}
+            onChangeText={setChatInput}
+            multiline
+            returnKeyType="send"
+            blurOnSubmit
+            onSubmitEditing={() => sendBrainMessage()}
+          />
+          <Pressable
+            onPress={() => sendBrainMessage()}
+            disabled={!chatInput.trim() || chatLoading}
+            style={[s.chatSendBtn, { backgroundColor: chatInput.trim() && !chatLoading ? "#6366F1" : colors.muted }]}
+          >
+            <Feather name="send" size={16} color={chatInput.trim() && !chatLoading ? "#fff" : colors.mutedForeground} />
+          </Pressable>
+        </View>
+      </View>
+    </KeyboardAvoidingView>
+    </View>
+  );
+}
+
+// ── Styles ────────────────────────────────────────────────────────────────────
+
+const s = StyleSheet.create({
+  center:        { flex: 1, alignItems: "center", justifyContent: "center", gap: 12 },
+  loadTxt:       { fontSize: 13 },
+  header:        { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingBottom: 8 },
+  headerLeft:    { gap: 2 },
+  headerTitle:   { fontSize: 20, fontWeight: "800", letterSpacing: 1 },
+  headerSub:     { fontSize: 11 },
+  refreshBtn:    { padding: 10, borderRadius: 10, borderWidth: 1 },
+
+  haltBanner:    { flexDirection: "row", alignItems: "center", gap: 12, margin: 16, padding: 14, borderRadius: 12, backgroundColor: "#EF444418", borderWidth: 1.5, borderColor: "#EF4444" },
+  haltTitle:     { fontSize: 13, fontWeight: "700", color: "#EF4444" },
+  haltSub:       { fontSize: 11, color: "#EF4444", opacity: 0.8, marginTop: 2 },
+  resumeBtn:     { backgroundColor: "#EF4444", paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8 },
+  resumeBtnTxt:  { fontSize: 12, fontWeight: "700", color: "#fff" },
+
+  stateRow:      { flexDirection: "row", gap: 8 },
+  stateBox:      { flex: 1, padding: 12, borderRadius: 10, borderWidth: 1, alignItems: "center", gap: 4 },
+  stateLabel:    { fontSize: 9, fontWeight: "600", letterSpacing: 0.5, textTransform: "uppercase", textAlign: "center" },
+  stateValue:    { fontSize: 13, fontWeight: "800", textAlign: "center" },
+  stateConf:     { fontSize: 9, textAlign: "center" },
+  smallLabel:    { fontSize: 10 },
+  resultChip:    { width: 18, height: 18, borderRadius: 4, alignItems: "center", justifyContent: "center", borderWidth: 1 },
+
+  goalText:      { fontSize: 13, lineHeight: 20 },
+  goalInput:     { fontSize: 13, borderRadius: 8, borderWidth: 1.5, padding: 10, lineHeight: 20, minHeight: 60 },
+  goalBtn:       { paddingVertical: 10, borderRadius: 8, alignItems: "center" },
+  goalBtnTxt:    { fontSize: 13, fontWeight: "700", color: "#fff" },
+
+  stratGrid:     { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  stratBtn:      { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 9, paddingHorizontal: 12, borderRadius: 10, minWidth: "48%", flex: 1 },
+  stratLabel:    { fontSize: 12 },
+  stratDesc:     { fontSize: 11, textAlign: "center", marginTop: 4 },
+  activeDot:     { width: 6, height: 6, borderRadius: 3, marginLeft: "auto" },
+
+  paramRow:      { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 8 },
+  paramLabel:    { fontSize: 13, fontWeight: "600" },
+  paramValue:    { fontSize: 16, fontWeight: "800" },
+  thresholdBtns: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  tBtn:          { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8, borderWidth: 1, alignItems: "center" },
+  tBtnTxt:       { fontSize: 12, fontWeight: "600" },
+  divider:       { height: 1, marginVertical: 4 },
+
+  actionRow:     { flexDirection: "row", gap: 8 },
+  actionBtn:     { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 12, borderRadius: 10, borderWidth: 1 },
+  actionBtnTxt:  { fontSize: 13, fontWeight: "700" },
+
+  aiKeyRow:      { flexDirection: "row", alignItems: "center", gap: 10, padding: 10, borderRadius: 10, borderWidth: 1 },
+  aiDot:         { width: 8, height: 8, borderRadius: 4, flexShrink: 0 },
+  aiKeyLabel:    { fontSize: 12, fontWeight: "700" },
+  aiKeyModel:    { fontSize: 10, marginTop: 2, fontFamily: "monospace" },
+  aiProvBadge:   { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
+  aiProvBadgeTxt:{ fontSize: 9, fontWeight: "700" },
+  aiStats:       { flexDirection: "row", gap: 8, marginTop: 4 },
+  aiStat:        { fontSize: 10 },
+  availBadge:    { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
+  availBadgeTxt: { fontSize: 10, fontWeight: "700" },
+  aiSummary:     { borderTopWidth: 1, paddingTop: 8, marginTop: 4 },
+  aiSummaryTxt:  { fontSize: 11, textAlign: "center" },
+
+  patternRow:    { flexDirection: "row", alignItems: "center", gap: 8 },
+  patternName:   { fontSize: 12, fontWeight: "600", width: 100 },
+  patternBarWrap:{ flex: 1, height: 6, backgroundColor: "#33333322", borderRadius: 3, overflow: "hidden" },
+  patternBar:    { height: 6, borderRadius: 3 },
+  patternWr:     { fontSize: 11, fontWeight: "700", width: 36, textAlign: "right" },
+  patternTotal:  { fontSize: 10, width: 24 },
+
+  lessonRow:     { flexDirection: "row", gap: 8, padding: 10, borderRadius: 10, borderWidth: 1 },
+  lessonIcon:    { fontSize: 14, marginTop: 1 },
+  lessonTxt:     { fontSize: 12, lineHeight: 18 },
+  lessonMeta:    { flexDirection: "row", gap: 8, marginTop: 4 },
+  lessonMetaTxt: { fontSize: 10 },
+
+  thoughtRow:    { borderLeftWidth: 3, paddingLeft: 10, paddingVertical: 6, paddingHorizontal: 10, borderRadius: 6 },
+  thoughtTxt:    { fontSize: 11, fontFamily: "monospace", lineHeight: 16 },
+  noThoughts:    { fontSize: 12, textAlign: "center", padding: 8 },
+
+  emptyBox:      { alignItems: "center", gap: 6, paddingVertical: 16 },
+  emptyTxt:      { fontSize: 14, fontWeight: "600" },
+  emptySub:      { fontSize: 12 },
+  msg:           { fontSize: 12, textAlign: "center", marginTop: 4 },
+
+  // ── Brain Chat ─────────────────────────────────────────────────────────────
+  chatContainer: { borderTopWidth: 1 },
+  chatMsgWrap:   { marginBottom: 6 },
+  chatUserWrap:  { alignItems: "flex-end" },
+  chatBotWrap:   { alignItems: "flex-start", flexDirection: "row", gap: 6 },
+  chatAvatar:    { width: 20, height: 20, borderRadius: 5, alignItems: "center", justifyContent: "center", marginTop: 3, flexShrink: 0 },
+  chatBubble:    { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 14 },
+  chatUserBubble:{ borderBottomRightRadius: 3 },
+  chatBotBubble: { borderWidth: 1, borderBottomLeftRadius: 3, flexDirection: "row", alignItems: "center", gap: 8 },
+  chatBubbleTxt: { fontSize: 13, lineHeight: 20 },
+  chatTyping:    { fontSize: 12 },
+  cmdBadge:      { flexDirection: "row", alignItems: "center", gap: 4, marginLeft: 4 },
+  cmdBadgeTxt:   { fontSize: 9, color: "#10B981", fontWeight: "700" },
+  chip:          { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 16, borderWidth: 1, flexShrink: 0 },
+  chipTxt:       { fontSize: 11, fontWeight: "600" },
+  chatInputRow:  { flexDirection: "row", alignItems: "flex-end", gap: 8, paddingHorizontal: 12, paddingTop: 8, borderTopWidth: 1 },
+  chatInput:     { flex: 1, borderRadius: 18, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 9, fontSize: 13, maxHeight: 90 },
+  chatSendBtn:   { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center" },
+});

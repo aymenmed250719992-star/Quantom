@@ -1,0 +1,27 @@
+# Reduce upload size for EAS Build
+node_modules/
+.expo/
+dist/
+web-build/
+android/
+ios/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+.metro-health-check*
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+.DS_Store
+*.log
+coverage/
+.nyc_output/
+__tests__/
+**/__tests__/
+**/*.test.*
+**/*.spec.*
+attached_assets/
+screenshots/

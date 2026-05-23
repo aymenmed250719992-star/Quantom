@@ -1,0 +1,24 @@
+{
+  "pattern_scores": {
+    "Mean Reversion": {
+      "wins": 0,
+      "losses": 2
+    },
+    "rule-based oversold": {
+      "wins": 4,
+      "losses": 10
+    }
+  },
+  "current_strategy": "trend_following",
+  "strategy_confidence": 0.95,
+  "goal": "Achieve consistent halal returns with >65% win rate",
+  "strategy_overrides": {
+    "active_rule": "Immediately activate the AI provider for real-time market analysis. Concurrently, strictly filter all BUY entries to only occur when the higher timeframe trend is confirmed bullish, avoiding 'falling knife' scenarios.",
+    "avoid": "Attempting to buy into strong bearish trends or 'oversold' conditions within a downtrend; avoid trading in highly volatile, directionless markets until AI analysis is restored and a clear trend is identified.",
+    "conf_adjustment": 15.0
+  },
+  "consecutive_losses": 0,
+  "consecutive_wins": 0,
+  "emergency_halted": false,
+  "saved_at": 1779062271.8345585
+}
