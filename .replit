@@ -70,3 +70,8 @@ externalPort = 8081
 [[ports]]
 localPort = 18115
 externalPort = 3000
+
+[userenv]
+
+[userenv.shared]
+EXPO_TOKEN = "S-r15h0EmaHEJFojYqCpa1NcnOsSrfMN6NCMsKDv"

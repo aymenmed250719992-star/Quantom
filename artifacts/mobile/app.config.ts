@@ -54,8 +54,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   extra: {
     EXPO_PUBLIC_DOMAIN: PROD_DOMAIN,
     eas: {
-      projectId: "e85c1691-99ce-4458-8f24-cb95734efab2",
+      projectId: "852966ee-aec0-4e74-85a9-ee6093dd8fd7",
     },
   },
-  owner: "aymenmstchm",
+  owner: "quantom23",
 });

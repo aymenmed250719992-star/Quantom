@@ -41,17 +41,12 @@
         }
       ],
       "expo-font",
-      "expo-web-browser",
-      "react-native-keyboard-controller"
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
     },
-    "extra": {
-      "eas": {
-        "projectId": "e85c1691-99ce-4458-8f24-cb95734efab2"
-      }
-    }
+    "extra": {}
   }
 }
