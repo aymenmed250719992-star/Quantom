@@ -20,6 +20,7 @@ _QUANTOM_DB_URL: str = os.environ.get("QUANTOM_DB_URL", "")
 _SUPABASE_DB_URL: str = os.environ.get("SUPABASE_DB_URL", "")
 _DATABASE_URL: str = _QUANTOM_DB_URL or _SUPABASE_DB_URL or os.environ.get("DATABASE_URL", "")
 _USE_SSL: bool = bool(_SUPABASE_DB_URL) and not bool(_QUANTOM_DB_URL)  # Supabase requires SSL
+_USE_SSL_RENDER: bool = bool(_QUANTOM_DB_URL)  # Render external connections require SSL
 
 
 def _parse_supabase_url(url: str):
@@ -112,7 +113,17 @@ class DatabaseClient:
             import asyncpg
             import ssl as _ssl
 
-            if _USE_SSL:
+            if _USE_SSL_RENDER:
+                # Render external PostgreSQL — requires SSL, no hostname check
+                ssl_ctx = _ssl.create_default_context()
+                ssl_ctx.check_hostname = False
+                ssl_ctx.verify_mode = _ssl.CERT_NONE
+                self._pool = await asyncpg.create_pool(
+                    self._db_url,
+                    min_size=1, max_size=5,
+                    command_timeout=15, ssl=ssl_ctx,
+                )
+            elif _USE_SSL:
                 ssl_ctx = _ssl.create_default_context()
                 ssl_ctx.check_hostname = False
                 ssl_ctx.verify_mode = _ssl.CERT_NONE
@@ -141,7 +152,7 @@ class DatabaseClient:
                     min_size=1, max_size=5,
                     command_timeout=15, ssl=False,
                 )
-            source = "Supabase" if _USE_SSL else "PostgreSQL"
+            source = "Render" if _USE_SSL_RENDER else ("Supabase" if _USE_SSL else "PostgreSQL")
             print(f"[DB] {source} pool connected ✅")
             return self._pool
         except Exception as e:
