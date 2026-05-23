@@ -146,6 +146,18 @@ export default function BrainScreen() {
   const [goalInput, setGoalInput]       = useState("");
   const [editGoal, setEditGoal]         = useState(false);
 
+  // ── Full memory state ─────────────────────────────────────────────────────
+  const [memData, setMemData]           = useState<any>(null);
+  const [memSearch, setMemSearch]       = useState("");
+  const [memSearchResults, setMemSearchResults] = useState<{ lessons: any[]; knowledge: any[] } | null>(null);
+  const [memSearching, setMemSearching] = useState(false);
+  const [showAddNote, setShowAddNote]   = useState(false);
+  const [noteTitle, setNoteTitle]       = useState("");
+  const [noteContent, setNoteContent]   = useState("");
+  const [noteCategory, setNoteCategory] = useState("general");
+  const [noteSaving, setNoteSaving]     = useState(false);
+  const [memTab, setMemTab]             = useState<"lessons"|"knowledge">("lessons");
+
   // ── Brain Chat state ──────────────────────────────────────────────────────
   const [chatMessages, setChatMessages] = useState<BrainMessage[]>([BRAIN_WELCOME]);
   const [chatInput, setChatInput]       = useState("");
@@ -246,6 +258,70 @@ export default function BrainScreen() {
   };
 
   useEffect(() => { load(); }, [load]);
+
+  // ── Full memory loader ─────────────────────────────────────────────────────
+  const loadMemory = useCallback(async () => {
+    try {
+      const r = await fetch(`${getApiBase()}/agent/memory/full`);
+      const d = await safeJson(r);
+      if (d && !d.error) setMemData(d);
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => { loadMemory(); }, [loadMemory]);
+
+  const handleMemSearch = async (q: string) => {
+    setMemSearch(q);
+    if (!q.trim()) { setMemSearchResults(null); return; }
+    setMemSearching(true);
+    try {
+      const r = await fetch(`${getApiBase()}/agent/memory/search?q=${encodeURIComponent(q)}`);
+      const d = await safeJson(r);
+      if (d) setMemSearchResults(d);
+    } catch { /* ignore */ }
+    setMemSearching(false);
+  };
+
+  const handleAddNote = async () => {
+    if (!noteTitle.trim() || !noteContent.trim()) return;
+    setNoteSaving(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    try {
+      const r = await fetch(`${getApiBase()}/agent/knowledge`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: noteTitle.trim(),
+          content: noteContent.trim(),
+          category: noteCategory,
+          importance: 7.0,
+          tags: noteCategory,
+          source: "user",
+        }),
+      });
+      const d = await safeJson(r);
+      if (d?.success) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        setNoteTitle(""); setNoteContent(""); setShowAddNote(false);
+        await loadMemory();
+      }
+    } catch { /* ignore */ }
+    setNoteSaving(false);
+  };
+
+  const handleDeleteLesson = async (id: string) => {
+    try {
+      await fetch(`${getApiBase()}/agent/memory/${id}`, { method: "DELETE" });
+      await loadMemory();
+    } catch { /* ignore */ }
+  };
+
+  const handleDeleteKnowledge = async (id: string) => {
+    try {
+      await fetch(`${getApiBase()}/agent/knowledge/${id}`, { method: "DELETE" });
+      await loadMemory();
+    } catch { /* ignore */ }
+  };
 
   // Pulse animation for emergency halt
   useEffect(() => {
@@ -712,6 +788,223 @@ export default function BrainScreen() {
         </View>
       )}
 
+      {/* ══════════════════════════════════════════════════════════════════ */}
+      {/* ── MEMORY & KNOWLEDGE ─ نظام الذاكرة الشاملة ─────────────────── */}
+      {/* ══════════════════════════════════════════════════════════════════ */}
+      <SectionHeader title="ذاكرة البوت الشاملة" icon="database" color="#8B5CF6" />
+
+      {/* Stats row */}
+      {memData?.stats && (
+        <View style={{ flexDirection: "row", gap: 8, marginHorizontal: 16, marginBottom: 4 }}>
+          {[
+            { label: "دروس", value: memData.stats.total_lessons, color: "#8B5CF6", icon: "book-open" },
+            { label: "ربح", value: memData.stats.wins, color: "#10B981", icon: "trending-up" },
+            { label: "خسارة", value: memData.stats.losses, color: "#EF4444", icon: "trending-down" },
+            { label: "معرفة", value: memData.stats.total_knowledge, color: "#F59E0B", icon: "cpu" },
+          ].map(st => (
+            <View key={st.label} style={[ms.statCard, { borderColor: `${st.color}33`, backgroundColor: `${st.color}0D`, flex: 1 }]}>
+              <Feather name={st.icon as any} size={12} color={st.color} />
+              <Text style={[ms.statNum, { color: st.color }]}>{st.value ?? 0}</Text>
+              <Text style={[ms.statLabel, { color: colors.mutedForeground }]}>{st.label}</Text>
+            </View>
+          ))}
+        </View>
+      )}
+
+      {/* Search bar */}
+      <View style={[ms.searchRow, { backgroundColor: colors.card, borderColor: colors.border, marginHorizontal: 16 }]}>
+        <Feather name="search" size={14} color={colors.mutedForeground} />
+        <TextInput
+          value={memSearch}
+          onChangeText={handleMemSearch}
+          placeholder="ابحث في الذاكرة... (عملة، نمط، حدث)"
+          placeholderTextColor={colors.mutedForeground}
+          style={[ms.searchInput, { color: colors.foreground }]}
+        />
+        {memSearching && <ActivityIndicator size="small" color={colors.mutedForeground} />}
+        {memSearch.length > 0 && !memSearching && (
+          <Pressable onPress={() => { setMemSearch(""); setMemSearchResults(null); }}>
+            <Feather name="x" size={14} color={colors.mutedForeground} />
+          </Pressable>
+        )}
+      </View>
+
+      {/* Tabs: Lessons / Knowledge */}
+      <View style={[ms.tabRow, { marginHorizontal: 16 }]}>
+        {(["lessons", "knowledge"] as const).map(t => (
+          <Pressable
+            key={t}
+            onPress={() => { setMemTab(t); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); }}
+            style={[ms.tabBtn, {
+              backgroundColor: memTab === t ? "#8B5CF620" : colors.muted,
+              borderColor:     memTab === t ? "#8B5CF6" : colors.border,
+              borderWidth:     memTab === t ? 2 : 1,
+              flex: 1,
+            }]}
+          >
+            <Feather name={t === "lessons" ? "book-open" : "cpu"} size={12} color={memTab === t ? "#8B5CF6" : colors.mutedForeground} />
+            <Text style={[ms.tabBtnTxt, { color: memTab === t ? "#8B5CF6" : colors.mutedForeground, fontWeight: memTab === t ? "800" : "500" }]}>
+              {t === "lessons" ? `دروس (${(memSearchResults ?? memData)?.lessons?.length ?? memData?.stats?.total_lessons ?? 0})` : `معرفة (${(memSearchResults ?? memData)?.knowledge?.length ?? memData?.stats?.total_knowledge ?? 0})`}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+
+      {/* ── Lessons List ── */}
+      {memTab === "lessons" && (
+        <View style={{ gap: 5, marginHorizontal: 16 }}>
+          {((memSearchResults?.lessons ?? memData?.recent_lessons) ?? []).slice(0, 40).map((l: any, i: number) => {
+            const win = l.outcome === "win";
+            const isUser = l.category === "user";
+            const imp = parseFloat(l.importance ?? 5);
+            const color = isUser ? "#F59E0B" : win ? "#10B981" : l.outcome === "open" ? "#6366F1" : "#EF4444";
+            const icon  = isUser ? "🔔" : win ? "✅" : l.outcome === "open" ? "🔄" : l.outcome === "instruction" ? "📋" : "📌";
+            return (
+              <View key={l.id ?? i} style={[ms.lessonCard, { borderColor: `${color}33`, backgroundColor: `${color}08` }]}>
+                <Text style={ms.lessonIcon}>{icon}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={[ms.lessonText, { color: colors.foreground }]} numberOfLines={4}>
+                    {l.lesson ?? "—"}
+                  </Text>
+                  <View style={ms.lessonFooter}>
+                    {l.symbol ? <Text style={[ms.lessonTag, { color, borderColor: `${color}44` }]}>{l.symbol}</Text> : null}
+                    {l.pattern ? <Text style={[ms.lessonTag, { color: colors.mutedForeground, borderColor: colors.border }]}>{l.pattern}</Text> : null}
+                    <Text style={[ms.lessonDate, { color: colors.mutedForeground }]}>
+                      {imp.toFixed(0)}/10 • {l.created_at ? new Date(l.created_at).toLocaleDateString("ar-SA") : ""}
+                    </Text>
+                  </View>
+                </View>
+                <Pressable onPress={() => l.id && handleDeleteLesson(l.id)} hitSlop={8} style={{ padding: 4, marginTop: 2 }}>
+                  <Feather name="trash-2" size={12} color={`${colors.destructive}88`} />
+                </Pressable>
+              </View>
+            );
+          })}
+          {((memSearchResults?.lessons ?? memData?.recent_lessons) ?? []).length === 0 && (
+            <View style={ms.emptyMem}>
+              <Feather name="book-open" size={28} color={colors.mutedForeground} />
+              <Text style={[ms.emptyMemTxt, { color: colors.mutedForeground }]}>لا توجد دروس بعد</Text>
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* ── Knowledge List ── */}
+      {memTab === "knowledge" && (
+        <View style={{ gap: 5, marginHorizontal: 16 }}>
+          {/* Add note button */}
+          <Pressable
+            onPress={() => { setShowAddNote(!showAddNote); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); }}
+            style={[ms.addNoteBtn, { borderColor: "#8B5CF666", backgroundColor: "#8B5CF60D" }]}
+          >
+            <Feather name={showAddNote ? "chevron-up" : "plus"} size={14} color="#8B5CF6" />
+            <Text style={[ms.addNoteTxt, { color: "#8B5CF6" }]}>
+              {showAddNote ? "إلغاء" : "إضافة معرفة يدوية"}
+            </Text>
+          </Pressable>
+
+          {/* Add note form */}
+          {showAddNote && (
+            <View style={[ms.addNoteForm, { backgroundColor: colors.card, borderColor: "#8B5CF644" }]}>
+              <TextInput
+                value={noteTitle}
+                onChangeText={setNoteTitle}
+                placeholder="العنوان (مثل: قاعدة BTC، تعليمة مهمة...)"
+                placeholderTextColor={colors.mutedForeground}
+                style={[ms.noteInput, { color: colors.foreground, borderColor: colors.border }]}
+              />
+              <TextInput
+                value={noteContent}
+                onChangeText={setNoteContent}
+                placeholder="المحتوى — هذا سيصبح جزءاً من ذاكرة البوت الدائمة"
+                placeholderTextColor={colors.mutedForeground}
+                multiline
+                numberOfLines={3}
+                style={[ms.noteInput, ms.noteInputMulti, { color: colors.foreground, borderColor: colors.border }]}
+              />
+              {/* Category selector */}
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+                {[
+                  { id: "general", label: "عام", color: "#6B7280" },
+                  { id: "strategy", label: "استراتيجية", color: "#8B5CF6" },
+                  { id: "risk", label: "مخاطرة", color: "#EF4444" },
+                  { id: "user", label: "تعليمة", color: "#F59E0B" },
+                  { id: "market", label: "سوق", color: "#10B981" },
+                ].map(c => (
+                  <Pressable
+                    key={c.id}
+                    onPress={() => setNoteCategory(c.id)}
+                    style={[ms.catBtn, {
+                      backgroundColor: noteCategory === c.id ? `${c.color}20` : colors.muted,
+                      borderColor: noteCategory === c.id ? c.color : colors.border,
+                    }]}
+                  >
+                    <Text style={[ms.catBtnTxt, { color: noteCategory === c.id ? c.color : colors.mutedForeground }]}>{c.label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Pressable
+                onPress={handleAddNote}
+                disabled={noteSaving || !noteTitle.trim() || !noteContent.trim()}
+                style={[ms.saveNoteBtn, { backgroundColor: "#8B5CF6", opacity: noteSaving ? 0.6 : 1 }]}
+              >
+                {noteSaving ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <>
+                    <Feather name="save" size={13} color="#fff" />
+                    <Text style={ms.saveNoteTxt}>حفظ في الذاكرة الدائمة</Text>
+                  </>
+                )}
+              </Pressable>
+            </View>
+          )}
+
+          {/* Knowledge items */}
+          {((memSearchResults?.knowledge ?? memData?.knowledge) ?? []).slice(0, 40).map((k: any, i: number) => {
+            const CAT_COLORS: Record<string,string> = {
+              strategy: "#8B5CF6", risk: "#EF4444", user: "#F59E0B",
+              market: "#10B981", general: "#6B7280", ai: "#4285F4",
+            };
+            const color = CAT_COLORS[k.category] ?? "#6B7280";
+            const imp = parseFloat(k.importance ?? 5);
+            return (
+              <View key={k.id ?? i} style={[ms.knowCard, { borderColor: `${color}33`, backgroundColor: `${color}08` }]}>
+                <View style={{ flex: 1 }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                    <View style={[ms.catDot, { backgroundColor: color }]} />
+                    <Text style={[ms.knowTitle, { color: colors.foreground }]} numberOfLines={1}>{k.title}</Text>
+                    <View style={[ms.catBadge, { backgroundColor: `${color}20` }]}>
+                      <Text style={[ms.catBadgeTxt, { color }]}>{k.category}</Text>
+                    </View>
+                    <Text style={[ms.knowImp, { color: colors.mutedForeground }]}>{imp.toFixed(0)}/10</Text>
+                  </View>
+                  <Text style={[ms.knowContent, { color: colors.foreground }]} numberOfLines={3}>
+                    {k.content}
+                  </Text>
+                  {k.source && (
+                    <Text style={[ms.knowSource, { color: colors.mutedForeground }]}>
+                      المصدر: {k.source} • {k.updated_at ? new Date(k.updated_at).toLocaleDateString("ar-SA") : ""}
+                    </Text>
+                  )}
+                </View>
+                <Pressable onPress={() => k.id && handleDeleteKnowledge(k.id)} hitSlop={8} style={{ padding: 4, marginTop: 2 }}>
+                  <Feather name="trash-2" size={12} color={`${colors.destructive}88`} />
+                </Pressable>
+              </View>
+            );
+          })}
+          {((memSearchResults?.knowledge ?? memData?.knowledge) ?? []).length === 0 && !showAddNote && (
+            <View style={ms.emptyMem}>
+              <Feather name="cpu" size={28} color={colors.mutedForeground} />
+              <Text style={[ms.emptyMemTxt, { color: colors.mutedForeground }]}>لا توجد معرفة مخزّنة</Text>
+              <Text style={[ms.emptyMemSub, { color: colors.mutedForeground }]}>أضف معرفة يدوية أو دع البوت يتعلم تلقائياً</Text>
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════ */}
       {/* ── Internal Thoughts Feed ── */}
       {(data?.recent_thoughts?.length ?? 0) > 0 && (
         <>
@@ -1015,4 +1308,49 @@ const s = StyleSheet.create({
   chatInputRow:  { flexDirection: "row", alignItems: "flex-end", gap: 8, paddingHorizontal: 12, paddingTop: 8, borderTopWidth: 1 },
   chatInput:     { flex: 1, borderRadius: 18, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 9, fontSize: 13, maxHeight: 90 },
   chatSendBtn:   { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center" },
+});
+
+// ── Memory & Knowledge Styles ──────────────────────────────────────────────────
+const ms = StyleSheet.create({
+  statCard:      { padding: 8, borderRadius: 10, borderWidth: 1, alignItems: "center", gap: 3 },
+  statNum:       { fontSize: 16, fontWeight: "800" },
+  statLabel:     { fontSize: 9, fontWeight: "600", textTransform: "uppercase", letterSpacing: 0.5 },
+
+  searchRow:     { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, borderWidth: 1, marginBottom: 8 },
+  searchInput:   { flex: 1, fontSize: 13 },
+
+  tabRow:        { flexDirection: "row", gap: 8, marginBottom: 10 },
+  tabBtn:        { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 9, paddingHorizontal: 12, borderRadius: 10 },
+  tabBtnTxt:     { fontSize: 12 },
+
+  lessonCard:    { flexDirection: "row", gap: 8, padding: 10, borderRadius: 10, borderWidth: 1 },
+  lessonIcon:    { fontSize: 14, marginTop: 2 },
+  lessonText:    { fontSize: 12, lineHeight: 18 },
+  lessonFooter:  { flexDirection: "row", gap: 6, marginTop: 4, alignItems: "center", flexWrap: "wrap" },
+  lessonTag:     { fontSize: 10, borderRadius: 4, borderWidth: 1, paddingHorizontal: 5, paddingVertical: 1 },
+  lessonDate:    { fontSize: 9, marginLeft: "auto" },
+
+  knowCard:      { flexDirection: "row", gap: 8, padding: 10, borderRadius: 10, borderWidth: 1 },
+  knowTitle:     { fontSize: 12, fontWeight: "700", flex: 1 },
+  knowContent:   { fontSize: 11, lineHeight: 17, marginTop: 3 },
+  knowSource:    { fontSize: 9, marginTop: 3 },
+  knowImp:       { fontSize: 9, marginLeft: "auto" },
+
+  catDot:        { width: 8, height: 8, borderRadius: 4, flexShrink: 0 },
+  catBadge:      { paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4 },
+  catBadgeTxt:   { fontSize: 9, fontWeight: "600" },
+
+  addNoteBtn:    { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, padding: 10, borderRadius: 10, borderWidth: 1.5, borderStyle: "dashed" },
+  addNoteTxt:    { fontSize: 13, fontWeight: "600" },
+  addNoteForm:   { borderRadius: 12, borderWidth: 1, padding: 12, gap: 8 },
+  noteInput:     { borderRadius: 8, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 9, fontSize: 13 },
+  noteInputMulti:{ minHeight: 70, textAlignVertical: "top" },
+  catBtn:        { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, borderWidth: 1 },
+  catBtnTxt:     { fontSize: 11, fontWeight: "600" },
+  saveNoteBtn:   { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 10, borderRadius: 10 },
+  saveNoteTxt:   { fontSize: 13, fontWeight: "700", color: "#fff" },
+
+  emptyMem:      { alignItems: "center", gap: 8, paddingVertical: 24 },
+  emptyMemTxt:   { fontSize: 14, fontWeight: "600" },
+  emptyMemSub:   { fontSize: 12 },
 });

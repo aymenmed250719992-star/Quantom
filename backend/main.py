@@ -1704,6 +1704,65 @@ async def get_agent_memory_legacy():
         return {"error": str(e)}
 
 
+@router.get("/agent/memory/full")
+async def get_full_memory():
+    """Full bot memory: lessons + knowledge + stats — for the Brain screen."""
+    from memory_engine import MemoryEngine
+    engine = MemoryEngine(db)
+    return await engine.get_memory_summary()
+
+
+@router.get("/agent/memory/search")
+async def search_agent_memory(q: str = "", category: str = ""):
+    """Search across lessons and knowledge."""
+    from memory_engine import MemoryEngine
+    engine = MemoryEngine(db)
+    if q:
+        lessons   = await db.search_memory(q, limit=30)
+        knowledge = await db.search_knowledge(q, limit=20)
+    else:
+        lessons   = await db.get_recent_lessons(limit=50)
+        knowledge = await db.get_knowledge(limit=30)
+    return {"lessons": lessons, "knowledge": knowledge}
+
+
+@router.delete("/agent/memory/{memory_id}")
+async def delete_agent_memory(memory_id: str):
+    """Delete a specific lesson from memory."""
+    ok = await db.delete_memory(memory_id)
+    return {"success": ok}
+
+
+class KnowledgeRequest(BaseModel):
+    title:     str
+    content:   str
+    category:  str = "general"
+    importance: float = 5.0
+    tags:      str = ""
+    source:    str = "user"
+
+
+@router.post("/agent/knowledge")
+async def add_knowledge(req: KnowledgeRequest):
+    """Manually add a piece of knowledge to the bot's long-term memory."""
+    ok = await db.save_knowledge({
+        "title":     req.title,
+        "content":   req.content,
+        "category":  req.category,
+        "importance": req.importance,
+        "tags":      req.tags,
+        "source":    req.source,
+    })
+    return {"success": ok}
+
+
+@router.delete("/agent/knowledge/{kid}")
+async def delete_knowledge(kid: str):
+    """Delete a knowledge entry."""
+    ok = await db.delete_knowledge(kid)
+    return {"success": ok}
+
+
 @router.post("/agent/strategic-review")
 async def trigger_strategic_review():
     """Force an immediate strategic review of recent performance."""

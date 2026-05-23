@@ -276,11 +276,53 @@ class DatabaseClient:
                 market_condition    TEXT        NOT NULL DEFAULT 'unknown',
                 pattern             TEXT        NOT NULL DEFAULT '',
                 outcome             TEXT        NOT NULL DEFAULT 'loss',
-                created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                importance          FLOAT       NOT NULL DEFAULT 5.0,
+                category            TEXT        NOT NULL DEFAULT 'trade',
+                tags                TEXT        NOT NULL DEFAULT '',
+                confidence          FLOAT       NOT NULL DEFAULT 0.7,
+                times_referenced    INT         NOT NULL DEFAULT 0,
+                source              TEXT        NOT NULL DEFAULT 'auto'
             )
         """)
         await self._exec_status(
             "CREATE INDEX IF NOT EXISTS idx_agentmem_created ON agent_memory(created_at DESC)"
+        )
+        await self._exec_status(
+            "CREATE INDEX IF NOT EXISTS idx_agentmem_importance ON agent_memory(importance DESC)"
+        )
+        # ── Migrate: add new columns if they don't exist (safe for existing DBs) ──
+        for col, defn in [
+            ("importance",       "FLOAT NOT NULL DEFAULT 5.0"),
+            ("category",         "TEXT NOT NULL DEFAULT 'trade'"),
+            ("tags",             "TEXT NOT NULL DEFAULT ''"),
+            ("confidence",       "FLOAT NOT NULL DEFAULT 0.7"),
+            ("times_referenced", "INT NOT NULL DEFAULT 0"),
+            ("source",           "TEXT NOT NULL DEFAULT 'auto'"),
+        ]:
+            await self._exec_status(
+                f"ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS {col} {defn}"
+            )
+
+        # ── bot_knowledge — persistent learned facts & strategies ────────────
+        await self._exec_status("""
+            CREATE TABLE IF NOT EXISTS bot_knowledge (
+                id          TEXT        PRIMARY KEY,
+                title       TEXT        NOT NULL DEFAULT '',
+                content     TEXT        NOT NULL DEFAULT '',
+                category    TEXT        NOT NULL DEFAULT 'general',
+                importance  FLOAT       NOT NULL DEFAULT 5.0,
+                tags        TEXT        NOT NULL DEFAULT '',
+                source      TEXT        NOT NULL DEFAULT 'user',
+                updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await self._exec_status(
+            "CREATE INDEX IF NOT EXISTS idx_botknow_importance ON bot_knowledge(importance DESC)"
+        )
+        await self._exec_status(
+            "CREATE INDEX IF NOT EXISTS idx_botknow_category ON bot_knowledge(category)"
         )
 
         # ── conversations ────────────────────────────────────────────────────
@@ -510,8 +552,10 @@ class DatabaseClient:
 
         await self._exec_status("""
             INSERT INTO agent_memory
-                (id, lesson, symbol, market_condition, pattern, outcome, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+                (id, lesson, symbol, market_condition, pattern, outcome, created_at,
+                 importance, category, tags, confidence, source)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            ON CONFLICT (id) DO NOTHING
         """,
             lesson_data.get("id"),
             str(lesson_data.get("lesson") or ""),
@@ -520,16 +564,95 @@ class DatabaseClient:
             str(lesson_data.get("pattern") or ""),
             str(lesson_data.get("outcome") or "loss"),
             raw_at,
+            float(lesson_data.get("importance", 5.0)),
+            str(lesson_data.get("category", "trade")),
+            str(lesson_data.get("tags", "")),
+            float(lesson_data.get("confidence", 0.7)),
+            str(lesson_data.get("source", "auto")),
         )
 
     async def get_recent_lessons(self, limit: int = 5) -> list:
         rows = await self._exec(
-            "SELECT * FROM agent_memory ORDER BY created_at DESC LIMIT $1",
-            min(limit, 50),
+            "SELECT * FROM agent_memory ORDER BY importance DESC, created_at DESC LIMIT $1",
+            min(limit, 200),
         )
         if rows is not None:
             return rows
         return self._mem_lessons[:limit]
+
+    async def search_memory(self, query: str, limit: int = 20) -> list:
+        """Full-text search across agent_memory lessons."""
+        q = f"%{query.lower()}%"
+        rows = await self._exec(
+            """SELECT * FROM agent_memory
+               WHERE LOWER(lesson) LIKE $1 OR LOWER(symbol) LIKE $1
+                  OR LOWER(pattern) LIKE $1 OR LOWER(tags) LIKE $1
+               ORDER BY importance DESC, created_at DESC LIMIT $2""",
+            q, min(limit, 100),
+        )
+        return rows or []
+
+    async def delete_memory(self, memory_id: str) -> bool:
+        """Delete a specific memory by ID."""
+        return await self._exec_status(
+            "DELETE FROM agent_memory WHERE id = $1", memory_id
+        )
+
+    # ── Bot Knowledge (persistent facts & strategies) ─────────────────────────
+
+    async def save_knowledge(self, entry: dict) -> bool:
+        entry = entry.copy()
+        entry.setdefault("id", str(uuid.uuid4()))
+        now = datetime.utcnow()
+        return await self._exec_status("""
+            INSERT INTO bot_knowledge
+                (id, title, content, category, importance, tags, source, updated_at, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (id) DO UPDATE SET
+                title      = EXCLUDED.title,
+                content    = EXCLUDED.content,
+                importance = EXCLUDED.importance,
+                tags       = EXCLUDED.tags,
+                updated_at = NOW()
+        """,
+            entry["id"],
+            str(entry.get("title", "")),
+            str(entry.get("content", "")),
+            str(entry.get("category", "general")),
+            float(entry.get("importance", 5.0)),
+            str(entry.get("tags", "")),
+            str(entry.get("source", "user")),
+            now, now,
+        )
+
+    async def get_knowledge(self, category: str | None = None, limit: int = 50) -> list:
+        """Retrieve bot knowledge, optionally filtered by category."""
+        if category:
+            rows = await self._exec(
+                "SELECT * FROM bot_knowledge WHERE category = $1 ORDER BY importance DESC, updated_at DESC LIMIT $2",
+                category, min(limit, 200),
+            )
+        else:
+            rows = await self._exec(
+                "SELECT * FROM bot_knowledge ORDER BY importance DESC, updated_at DESC LIMIT $1",
+                min(limit, 200),
+            )
+        return rows or []
+
+    async def search_knowledge(self, query: str, limit: int = 20) -> list:
+        """Full-text search across bot_knowledge."""
+        q = f"%{query.lower()}%"
+        rows = await self._exec(
+            """SELECT * FROM bot_knowledge
+               WHERE LOWER(title) LIKE $1 OR LOWER(content) LIKE $1
+                  OR LOWER(tags) LIKE $1 OR LOWER(category) LIKE $1
+               ORDER BY importance DESC LIMIT $2""",
+            q, min(limit, 100),
+        )
+        return rows or []
+
+    async def delete_knowledge(self, kid: str) -> bool:
+        return await self._exec_status("DELETE FROM bot_knowledge WHERE id = $1", kid)
 
     # ── AI Keys (persistent storage) ─────────────────────────────────────────
 

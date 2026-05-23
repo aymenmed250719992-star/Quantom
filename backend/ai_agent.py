@@ -300,34 +300,46 @@ class AIAgent:
         print(f"[AI] Agent ready: {len(self._slots)} key(s), {avail} available")
 
     def _load_keys(self) -> None:
+        """Load all keys from env vars — NO LIMIT on number of keys per provider."""
         self._slots = []
-        # Gemini (up to 10 keys)
-        for i in range(10):
+        _LIMIT = 99  # effectively unlimited
+
+        for i in range(_LIMIT):
             env = "GEMINI_API_KEY" if i == 0 else f"GEMINI_API_KEY_{i + 1}"
             key = os.environ.get(env, "").strip()
-            if key and not key.startswith("your_"):
-                self._slots.append(AIKeySlot("gemini", i, key))
+            if not key or key.startswith("your_"):
+                break
+            self._slots.append(AIKeySlot("gemini", i, key))
 
-        # OpenAI (up to 5 keys)
-        for i in range(5):
+        for i in range(_LIMIT):
             env = "OPENAI_API_KEY" if i == 0 else f"OPENAI_API_KEY_{i + 1}"
             key = os.environ.get(env, "").strip()
-            if key and not key.startswith("your_"):
-                self._slots.append(AIKeySlot("openai", i, key))
+            if not key or key.startswith("your_"):
+                break
+            self._slots.append(AIKeySlot("openai", i, key))
 
-        # Anthropic / Claude (up to 5 keys)
-        for i in range(5):
+        for i in range(_LIMIT):
             env = "ANTHROPIC_API_KEY" if i == 0 else f"ANTHROPIC_API_KEY_{i + 1}"
             key = os.environ.get(env, "").strip()
-            if key and not key.startswith("your_"):
-                self._slots.append(AIKeySlot("claude", i, key))
+            if not key or key.startswith("your_"):
+                break
+            self._slots.append(AIKeySlot("claude", i, key))
 
-        # Groq — free fast inference (llama-3.3-70b)
-        for i in range(5):
+        for i in range(_LIMIT):
             env = "GROQ_API_KEY" if i == 0 else f"GROQ_API_KEY_{i + 1}"
             key = os.environ.get(env, "").strip()
-            if key and not key.startswith("your_"):
-                self._slots.append(AIKeySlot("groq", i, key))
+            if not key or key.startswith("your_"):
+                break
+            self._slots.append(AIKeySlot("groq", i, key))
+
+        for i in range(_LIMIT):
+            env = "GROK_API_KEY" if i == 0 else f"GROK_API_KEY_{i + 1}"
+            key = os.environ.get(env, "").strip()
+            if not key or key.startswith("your_"):
+                break
+            slot = AIKeySlot("grok", i, key)
+            slot._base_url = PROVIDER_DEFAULTS["grok"]["base_url"]
+            self._slots.append(slot)
 
     def add_key(
         self,
@@ -529,7 +541,19 @@ class AIAgent:
         except Exception:
             pass
 
-        # ── Agent memory + recent lessons ──────────────────────────────────────
+        # ── Deep persistent memory (lessons + knowledge + user rules) ──────────
+        try:
+            from memory_engine import MemoryEngine
+            from database import QuantomDB
+            _mdb = QuantomDB.get_instance()
+            _meng = MemoryEngine(_mdb)
+            rich_ctx = await _meng.get_rich_context(query=message, limit_lessons=12, limit_knowledge=8)
+            if rich_ctx:
+                context_parts.append(rich_ctx)
+        except Exception:
+            pass
+
+        # ── Agent pattern scores & session state ─────────────────────────────
         try:
             from agent_core import TradingAgent
             _ta = TradingAgent.get_instance()
@@ -542,10 +566,6 @@ class AIAgent:
                 context_parts.append(f"Winning patterns: {patt}")
             if mem.get("strategy_overrides", {}).get("active_rule"):
                 context_parts.append(f"Current rule: {mem['strategy_overrides']['active_rule'][:80]}")
-            lessons = await _ta.db.get_recent_lessons(limit=6)
-            if lessons:
-                l_text = "\n".join(f"  • {l.get('lesson','')[:110]}" for l in lessons[:6])
-                context_parts.append(f"\nRecent trade lessons:\n{l_text}")
         except Exception:
             pass
 
