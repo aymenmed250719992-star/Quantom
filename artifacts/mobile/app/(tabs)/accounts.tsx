@@ -9,7 +9,9 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -115,7 +117,11 @@ function AddAccountModal({
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <View style={[am.root, { backgroundColor: colors.background }]}>
+      <KeyboardAvoidingView
+        style={[am.root, { backgroundColor: colors.background }]}
+        behavior={Platform.OS === "ios" ? "padding" : "padding"}
+        keyboardVerticalOffset={0}
+      >
         {/* Header */}
         <View style={[am.header, { borderBottomColor: colors.border }]}>
           <Pressable onPress={() => { reset(); onClose(); }} style={am.closeBtn}>
@@ -260,7 +266,7 @@ function AddAccountModal({
             }
           </Pressable>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

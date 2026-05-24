@@ -62,7 +62,9 @@ function ClassicTabLayout() {
         tabBarInactiveTintColor: colors.mutedForeground,
         headerShown: false,
         tabBarStyle: {
-          position: "absolute",
+          // position: absolute only on iOS (for blur). On Android it stays in normal flow
+          // so the navigator automatically insets screen content above the tab bar.
+          ...(isIOS ? { position: "absolute" as const } : {}),
           backgroundColor: isIOS ? "transparent" : colors.card,
           borderTopWidth: 1,
           borderTopColor: colors.border,
@@ -82,11 +84,7 @@ function ClassicTabLayout() {
               tint="dark"
               style={StyleSheet.absoluteFill}
             />
-          ) : (
-            <View
-              style={[StyleSheet.absoluteFill, { backgroundColor: colors.card }]}
-            />
-          ),
+          ) : null,
       }}
     >
       <Tabs.Screen

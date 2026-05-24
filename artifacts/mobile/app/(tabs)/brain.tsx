@@ -16,10 +16,10 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  KeyboardAvoidingView,
   TextInput,
   View,
 } from "react-native";
-import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { getApiBase, safeJson } from "@/constants/api";
@@ -383,7 +383,11 @@ export default function BrainScreen() {
   const curStrategy = STRATEGIES.find(s => s.id === (st?.current ?? "mean_reversion")) ?? STRATEGIES[0];
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.background }}>
+    <KeyboardAvoidingView
+      style={{ flex: 1, backgroundColor: colors.background }}
+      behavior={Platform.OS === "ios" ? "padding" : "padding"}
+      keyboardVerticalOffset={0}
+    >
     <ScrollView
       style={{ flex: 1 }}
       contentContainerStyle={{ paddingBottom: 8 }}
@@ -1023,14 +1027,8 @@ export default function BrainScreen() {
       <SectionHeader title="تحدث مع العقل مباشرة" icon="message-square" color="#6366F1" />
     </ScrollView>
 
-    {/* Brain Chat — fixed at bottom as KeyboardAvoidingView */}
-    <KeyboardAvoidingView
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-      keyboardVerticalOffset={Platform.OS === "web" ? 84 : 0}
-      style={{ backgroundColor: colors.background }}
-    >
-      {/* Chat messages list */}
-      <View style={[s.chatContainer, { borderColor: colors.border, backgroundColor: colors.background }]}>
+    {/* Brain Chat — fixed at bottom (sibling of ScrollView inside root KAV) */}
+      <View style={[s.chatContainer, { borderColor: colors.border, backgroundColor: colors.background, borderTopWidth: 1 }]}>
         <FlatList
           ref={chatListRef}
           data={chatMessages}
@@ -1203,7 +1201,6 @@ export default function BrainScreen() {
         </View>
       </View>
     </KeyboardAvoidingView>
-    </View>
   );
 }
 
@@ -1291,7 +1288,7 @@ const s = StyleSheet.create({
   msg:           { fontSize: 12, textAlign: "center", marginTop: 4 },
 
   // ── Brain Chat ─────────────────────────────────────────────────────────────
-  chatContainer: { borderTopWidth: 1 },
+  chatContainer: {},
   chatMsgWrap:   { marginBottom: 6 },
   chatUserWrap:  { alignItems: "flex-end" },
   chatBotWrap:   { alignItems: "flex-start", flexDirection: "row", gap: 6 },
