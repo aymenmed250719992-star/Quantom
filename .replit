@@ -1,4 +1,4 @@
-modules = ["nodejs-24", "python-3.11"]
+modules = ["nodejs-20", "python-3.12", "web"]
 
 [deployment]
 router = "application"
@@ -48,7 +48,7 @@ args = "pnpm --filter @workspace/mobile run dev"
 outputType = "console"
 
 [agent]
-stack = "PNPM_WORKSPACE"
+stack = "BEST_EFFORT_FALLBACK"
 expertMode = true
 
 [postMerge]
@@ -75,3 +75,7 @@ externalPort = 3000
 
 [userenv.shared]
 EXPO_TOKEN = "S-r15h0EmaHEJFojYqCpa1NcnOsSrfMN6NCMsKDv"
+
+[nix]
+channel = "stable-25_05"
+packages = ["glibcLocales", "libxcrypt", "postgresql"]

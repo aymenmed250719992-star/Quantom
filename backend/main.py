@@ -127,9 +127,12 @@ async def lifespan(app: FastAPI):
 
     # ── Register current server domain in DB (for mobile reconnection) ──────
     try:
+        # Prefer Replit domain, fall back to Render external URL
+        replit_domain = os.environ.get("REPLIT_DEV_DOMAIN", "") or os.environ.get("REPLIT_DOMAINS", "")
         render_domain = os.environ.get("RENDER_EXTERNAL_URL", "")
-        if render_domain:
-            clean = render_domain.replace("https://", "").replace("http://", "").rstrip("/")
+        raw_domain = replit_domain or render_domain
+        if raw_domain:
+            clean = raw_domain.replace("https://", "").replace("http://", "").rstrip("/").split(",")[0].strip()
             await db.save_server_domain(clean)
             print(f"[Startup] Server domain registered: {clean}")
     except Exception as _sd:
@@ -148,9 +151,13 @@ async def lifespan(app: FastAPI):
     # ── Self-pinger: keeps server awake (Replit + Render) ───────────────────
     async def _keep_alive_loop():
         import httpx
-        # Determine ping URL: use RENDER_EXTERNAL_URL if on Render, else localhost
+        # Prefer Replit domain, fall back to Render, else localhost
+        replit_url = os.environ.get("REPLIT_DEV_DOMAIN", "") or os.environ.get("REPLIT_DOMAINS", "")
         render_url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
-        if render_url:
+        if replit_url:
+            clean_replit = replit_url.split(",")[0].strip().rstrip("/")
+            ping_url = f"https://{clean_replit}/trade/ping"
+        elif render_url:
             ping_url = f"{render_url}/trade/ping"
         else:
             ping_url = "http://localhost:5000/trade/ping"
@@ -242,8 +249,10 @@ async def get_status():
 @router.get("/domain")
 async def get_domain():
     """Public endpoint — returns the current server domain for mobile auto-reconnect."""
+    replit_url = os.environ.get("REPLIT_DEV_DOMAIN", "") or os.environ.get("REPLIT_DOMAINS", "")
     render_url = os.environ.get("RENDER_EXTERNAL_URL", "")
-    domain = render_url.replace("https://", "").replace("http://", "").rstrip("/") if render_url else ""
+    raw = replit_url or render_url
+    domain = raw.replace("https://", "").replace("http://", "").rstrip("/").split(",")[0].strip() if raw else ""
     return {"domain": domain, "ok": True}
 
 
