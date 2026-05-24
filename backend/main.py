@@ -145,8 +145,24 @@ async def lifespan(app: FastAPI):
             "message": "♻️ Autopilot auto-resumed after server restart",
         }))
 
+    # ── Self-pinger: keeps Replit awake even when mobile app is closed ───────
+    async def _keep_alive_loop():
+        import httpx
+        await asyncio.sleep(60)  # wait 1 min after startup before first ping
+        while True:
+            try:
+                async with httpx.AsyncClient(timeout=10) as _hx:
+                    await _hx.get("http://localhost:5000/trade/ping")
+                print("[KeepAlive] ✅ Self-ping OK — server stays awake")
+            except Exception as _e:
+                print(f"[KeepAlive] ping failed (non-critical): {_e}")
+            await asyncio.sleep(240)  # ping every 4 minutes
+
+    _keep_alive_task = asyncio.create_task(_keep_alive_loop())
+
     yield
     # Shutdown
+    _keep_alive_task.cancel()
     scheduler_instance.stop()
     await ExchangeClient.get_instance().close()
     ExchangeClient.reset_instance()

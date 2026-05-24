@@ -9,8 +9,8 @@
       "losses": 10
     }
   },
-  "current_strategy": "trend_following",
-  "strategy_confidence": 0.95,
+  "current_strategy": "trend_following|momentum_breakout|divergence",
+  "strategy_confidence": 0.9,
   "goal": "Achieve consistent halal returns with >65% win rate",
   "strategy_overrides": {
     "active_rule": "Immediately activate the AI provider for real-time market analysis. Concurrently, strictly filter all BUY entries to only occur when the higher timeframe trend is confirmed bullish, avoiding 'falling knife' scenarios.",
@@ -20,5 +20,56 @@
   "consecutive_losses": 0,
   "consecutive_wins": 0,
   "emergency_halted": false,
-  "saved_at": 1779062271.8345585
+  "session_thoughts": [
+    "[09:12:33] Scan #1 | WR:67% (stable) | Streak: \ud83d\udfe2\u00d70",
+    "[09:12:43] \ud83d\udd04 Strategy shifted: trend_following \u2192 trend_following|momentum_breakout|divergence (90% conf)",
+    "[09:14:50] Scan #1 | WR:67% (stable) | Streak: \ud83d\udfe2\u00d70"
+  ],
+  "session_plans": [
+    {
+      "scan_number": 1,
+      "strategy": "trend_following",
+      "win_rate": 66.67,
+      "trend": "stable",
+      "patterns_to_favor": [],
+      "market_symbols": [
+        "BNB/USDT",
+        "BTC/USDT",
+        "SOL/USDT",
+        "ADA/USDT",
+        "ETH/USDT",
+        "LINK/USDT"
+      ],
+      "consecutive_losses": 0,
+      "consecutive_wins": 0,
+      "emergency_halted": false,
+      "needs_reflection": true,
+      "needs_deep_review": false,
+      "perf_dip_trigger": false,
+      "created_at": "2026-05-24T09:12:33.980614"
+    },
+    {
+      "scan_number": 1,
+      "strategy": "trend_following|momentum_breakout|divergence",
+      "win_rate": 66.67,
+      "trend": "stable",
+      "patterns_to_favor": [],
+      "market_symbols": [
+        "BNB/USDT",
+        "BTC/USDT",
+        "SOL/USDT",
+        "ADA/USDT",
+        "ETH/USDT",
+        "LINK/USDT"
+      ],
+      "consecutive_losses": 0,
+      "consecutive_wins": 0,
+      "emergency_halted": false,
+      "needs_reflection": true,
+      "needs_deep_review": false,
+      "perf_dip_trigger": false,
+      "created_at": "2026-05-24T09:14:50.026413"
+    }
+  ],
+  "saved_at": 1779614098.6529589
 }
