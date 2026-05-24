@@ -263,8 +263,24 @@ class DatabaseClient:
                 added_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 base_url        TEXT        NOT NULL DEFAULT '',
                 model_name      TEXT        NOT NULL DEFAULT '',
-                UNIQUE(provider, slot_index)
+                UNIQUE(provider, api_key)
             )
+        """)
+        # Migrate old UNIQUE(provider, slot_index) → UNIQUE(provider, api_key) if needed
+        await self._exec_status(
+            "ALTER TABLE ai_keys DROP CONSTRAINT IF EXISTS ai_keys_provider_slot_index_key"
+        )
+        # Ensure new constraint exists
+        await self._exec_status("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'ai_keys_provider_api_key_key'
+                ) THEN
+                    ALTER TABLE ai_keys ADD CONSTRAINT ai_keys_provider_api_key_key UNIQUE (provider, api_key);
+                END IF;
+            END $$;
         """)
 
         # ── agent_memory ────────────────────────────────────────────────────
@@ -698,19 +714,34 @@ class DatabaseClient:
         base_url: str = "",
         model_name: str = "",
     ) -> bool:
-        """Upsert an AI key into the database (supports any provider)."""
+        """Upsert an AI key into the database — UNIQUE on (provider, api_key) → unlimited keys per provider."""
+        # Auto-compute next slot_index if caller passes -1
+        if slot_index < 0:
+            row = await self._exec_one(
+                "SELECT COALESCE(MAX(slot_index), -1) + 1 AS next_slot FROM ai_keys WHERE provider = $1",
+                provider,
+            )
+            slot_index = int(row.get("next_slot", 0)) if row else 0
+
         return await self._exec_status("""
             INSERT INTO ai_keys (provider, api_key, label, slot_index, is_active, added_at, base_url, model_name, display_label)
             VALUES ($1, $2, $3, $4, TRUE, NOW(), $5, $6, $3)
-            ON CONFLICT (provider, slot_index)
-            DO UPDATE SET api_key       = EXCLUDED.api_key,
-                          label         = EXCLUDED.label,
+            ON CONFLICT (provider, api_key)
+            DO UPDATE SET label         = EXCLUDED.label,
                           display_label = EXCLUDED.display_label,
                           base_url      = EXCLUDED.base_url,
                           model_name    = EXCLUDED.model_name,
                           is_active     = TRUE,
                           added_at      = NOW()
         """, provider, api_key, label, slot_index, base_url or "", model_name or "")
+
+    async def get_next_slot_index(self, provider: str) -> int:
+        """Get next available slot_index for a provider (for unlimited keys)."""
+        row = await self._exec_one(
+            "SELECT COALESCE(MAX(slot_index), -1) + 1 AS next_slot FROM ai_keys WHERE provider = $1",
+            provider,
+        )
+        return int(row.get("next_slot", 0)) if row else 0
 
     async def get_ai_keys(self, provider: Optional[str] = None) -> list[dict]:
         """Load all active AI keys, optionally filtered by provider."""

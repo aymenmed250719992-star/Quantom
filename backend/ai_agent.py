@@ -356,7 +356,8 @@ class AIAgent:
             return {"success": False, "error": f"Unknown provider: {provider}. Use: {', '.join(PROVIDERS)}"}
 
         existing = [s for s in self._slots if s.provider == provider]
-        idx = len(existing)
+        # Use max existing idx + 1 to avoid DB slot conflicts on re-add after delete
+        idx = max([s.idx for s in existing] + [-1]) + 1
 
         # Resolve defaults
         base_url   = base_url   or PROVIDER_DEFAULTS.get(provider, {}).get("base_url", "")

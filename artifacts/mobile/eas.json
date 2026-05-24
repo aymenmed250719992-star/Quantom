@@ -10,7 +10,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_DOMAIN": "290bfbc6-6612-42f6-b385-00acf1a1a507-00-2kl0dig85vmqw.riker.replit.dev"
+        "EXPO_PUBLIC_DOMAIN": "a6a5a378-f335-4b93-92de-b841558a9607-00-2tcrkgzfuxtzv.kirk.replit.dev"
       }
     },
     "preview": {
@@ -19,15 +19,16 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_DOMAIN": "290bfbc6-6612-42f6-b385-00acf1a1a507-00-2kl0dig85vmqw.riker.replit.dev"
+        "EXPO_PUBLIC_DOMAIN": "a6a5a378-f335-4b93-92de-b841558a9607-00-2tcrkgzfuxtzv.kirk.replit.dev"
       }
     },
     "production": {
+      "distribution": "internal",
       "android": {
-        "buildType": "app-bundle"
+        "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_DOMAIN": "290bfbc6-6612-42f6-b385-00acf1a1a507-00-2kl0dig85vmqw.riker.replit.dev"
+        "EXPO_PUBLIC_DOMAIN": "a6a5a378-f335-4b93-92de-b841558a9607-00-2tcrkgzfuxtzv.kirk.replit.dev"
       }
     }
   },
