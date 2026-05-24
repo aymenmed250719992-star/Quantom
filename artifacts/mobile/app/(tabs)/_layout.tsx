@@ -36,6 +36,10 @@ function NativeTabLayout() {
         <Icon sf={{ default: "message", selected: "message.fill" }} />
         <Label>AI Chat</Label>
       </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="accounts">
+        <Icon sf={{ default: "person.2", selected: "person.2.fill" }} />
+        <Label>Accounts</Label>
+      </NativeTabs.Trigger>
       <NativeTabs.Trigger name="settings">
         <Icon sf={{ default: "gearshape", selected: "gearshape.fill" }} />
         <Label>Settings</Label>
@@ -154,6 +158,18 @@ function ClassicTabLayout() {
               <SymbolView name="cpu" tintColor={color} size={22} />
             ) : (
               <Feather name="cpu" size={20} color={color} />
+            ),
+        }}
+      />
+      <Tabs.Screen
+        name="accounts"
+        options={{
+          title: "ACCOUNTS",
+          tabBarIcon: ({ color }) =>
+            isIOS ? (
+              <SymbolView name="person.2.fill" tintColor={color} size={22} />
+            ) : (
+              <Feather name="users" size={20} color={color} />
             ),
         }}
       />

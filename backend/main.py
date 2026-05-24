@@ -148,6 +148,27 @@ async def lifespan(app: FastAPI):
             "message": "♻️ Autopilot auto-resumed after server restart",
         }))
 
+    # ── Multi-account: load secondary exchange accounts ─────────────────────
+    try:
+        from multi_account import MultiAccountManager
+        ma_mgr = MultiAccountManager.get_instance()
+        n_acc  = await ma_mgr.load_accounts(db)
+        if n_acc:
+            print(f"[Startup] {n_acc} secondary account(s) loaded for multi-account trading")
+    except Exception as _ma:
+        print(f"[Startup] Multi-account init error: {_ma}")
+
+    # ── Node coordinator: leader election for multi-server HA ────────────────
+    try:
+        from node_coordinator import NodeCoordinator
+        nc = NodeCoordinator.get_instance()
+        nc.set_db(db)
+        nc.set_scheduler_fns(scheduler_instance.start, scheduler_instance.stop)
+        await nc.start()
+        print(f"[Startup] Node coordinator ready — leader={nc.is_leader}")
+    except Exception as _nc:
+        print(f"[Startup] Node coordinator error: {_nc}")
+
     # ── Self-pinger: keeps server awake (Replit + Render) ───────────────────
     async def _keep_alive_loop():
         import httpx
@@ -178,6 +199,18 @@ async def lifespan(app: FastAPI):
     # Shutdown
     _keep_alive_task.cancel()
     scheduler_instance.stop()
+    # Shutdown node coordinator
+    try:
+        from node_coordinator import NodeCoordinator
+        await NodeCoordinator.get_instance().stop()
+    except Exception:
+        pass
+    # Shutdown multi-account clients
+    try:
+        from multi_account import MultiAccountManager
+        await MultiAccountManager.get_instance().close_all()
+    except Exception:
+        pass
     await ExchangeClient.get_instance().close()
     ExchangeClient.reset_instance()
 
@@ -2362,6 +2395,147 @@ async def get_zakat():
         ],
         "calculated_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ── MULTI-ACCOUNT MANAGEMENT ──────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class AddAccountRequest(BaseModel):
+    name:           str
+    exchange_name:  str = "mexc"
+    api_key:        str = ""
+    api_secret:     str = ""
+    api_passphrase: str = ""
+    mode:           str = "demo"
+    balance:        float = 10000.0
+
+class ToggleAccountRequest(BaseModel):
+    is_active: bool
+
+
+@router.get("/accounts")
+async def list_accounts():
+    """List all configured exchange accounts (secrets hidden)."""
+    accounts = await db.get_exchange_accounts()
+    # Sync balances for all active accounts
+    from multi_account import MultiAccountManager
+    mgr = MultiAccountManager.get_instance()
+    await mgr.load_accounts(db)
+    balances_raw = await mgr.get_all_balances()
+    bal_map = {b.get("account_id", ""): b.get("total", 0.0) for b in balances_raw}
+    for acc in accounts:
+        if acc.get("is_active") and acc.get("id") in bal_map:
+            acc["live_balance"] = bal_map[acc["id"]]
+    return {"accounts": accounts, "count": len(accounts)}
+
+
+@router.post("/accounts")
+async def add_account(req: AddAccountRequest):
+    """Add a new secondary exchange account."""
+    data = {
+        "name":           req.name.strip() or "Account",
+        "exchange_name":  req.exchange_name.lower().strip(),
+        "api_key":        req.api_key.strip(),
+        "api_secret":     req.api_secret.strip(),
+        "api_passphrase": req.api_passphrase.strip(),
+        "mode":           req.mode.lower().strip(),
+        "balance":        req.balance,
+        "is_active":      True,
+    }
+    acc = await db.add_exchange_account(data)
+    # Reload MultiAccountManager
+    from multi_account import MultiAccountManager
+    await MultiAccountManager.get_instance().load_accounts(db)
+    await manager.broadcast(json.dumps({
+        "type": "log",
+        "message": f"➕ حساب جديد مضاف: {data['name']} ({data['exchange_name'].upper()}) [{data['mode'].upper()}]",
+    }))
+    return {"success": True, "account": {"id": acc["id"], "name": data["name"]}}
+
+
+@router.delete("/accounts/{account_id}")
+async def delete_account(account_id: str):
+    """Delete a secondary exchange account."""
+    ok = await db.delete_exchange_account(account_id)
+    from multi_account import MultiAccountManager
+    await MultiAccountManager.get_instance().load_accounts(db)
+    return {"success": ok}
+
+
+@router.put("/accounts/{account_id}/toggle")
+async def toggle_account(account_id: str, req: ToggleAccountRequest):
+    """Enable or disable a secondary account."""
+    ok = await db.toggle_exchange_account(account_id, req.is_active)
+    from multi_account import MultiAccountManager
+    await MultiAccountManager.get_instance().load_accounts(db)
+    state = "مفعّل" if req.is_active else "موقف"
+    await manager.broadcast(json.dumps({
+        "type": "log",
+        "message": f"🔄 حساب {account_id[:8]}… {state}",
+    }))
+    return {"success": ok, "is_active": req.is_active}
+
+
+@router.get("/accounts/balances")
+async def get_accounts_balances():
+    """Get live balances from all active secondary accounts."""
+    from multi_account import MultiAccountManager
+    mgr = MultiAccountManager.get_instance()
+    await mgr.load_accounts(db)
+    balances = await mgr.get_all_balances()
+    # Sync to DB
+    for b in balances:
+        aid = b.get("account_id")
+        tot = b.get("total", 0.0)
+        if aid and not b.get("error"):
+            await db.update_account_balance(aid, tot)
+    total = sum(b.get("total", 0) for b in balances if not b.get("error"))
+    return {
+        "accounts": balances,
+        "total_combined_usdt": round(total, 4),
+        "count": len(balances),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ── MULTI-SERVER CLUSTER STATUS ───────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/nodes")
+async def get_cluster_nodes():
+    """Return all server nodes in the cluster with their heartbeat status."""
+    from node_coordinator import NodeCoordinator, LEADER_TIMEOUT
+    from datetime import datetime, timezone, timedelta
+    nc = NodeCoordinator.get_instance()
+    try:
+        nodes = await db.get_all_nodes()
+        now   = datetime.now(timezone.utc)
+        for n in nodes:
+            hb_str = n.get("last_heartbeat", "")
+            try:
+                hb = datetime.fromisoformat(hb_str.replace("Z", "+00:00")) if hb_str else None
+                if hb:
+                    if hb.tzinfo is None:
+                        hb = hb.replace(tzinfo=timezone.utc)
+                    age = (now - hb).total_seconds()
+                    n["age_seconds"] = round(age)
+                    n["alive"]       = age < LEADER_TIMEOUT
+                else:
+                    n["age_seconds"] = 9999
+                    n["alive"]       = False
+            except Exception:
+                n["age_seconds"] = 9999
+                n["alive"]       = False
+        return {
+            "this_node": nc.get_status(),
+            "nodes":     nodes,
+            "total":     len(nodes),
+            "leaders":   sum(1 for n in nodes if n.get("is_leader") and n.get("alive")),
+            "alive":     sum(1 for n in nodes if n.get("alive")),
+        }
+    except Exception as e:
+        return {"this_node": nc.get_status(), "nodes": [], "error": str(e)}
 
 
 @router.websocket("/ws")

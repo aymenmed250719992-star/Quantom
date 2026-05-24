@@ -355,6 +355,39 @@ class DatabaseClient:
             )
         """)
 
+        # ── exchange_accounts (multi-account trading) ────────────────────────
+        await self._exec_status("""
+            CREATE TABLE IF NOT EXISTS exchange_accounts (
+                id              TEXT        PRIMARY KEY,
+                name            TEXT        NOT NULL DEFAULT 'Account',
+                exchange_name   TEXT        NOT NULL DEFAULT 'mexc',
+                api_key         TEXT        NOT NULL DEFAULT '',
+                api_secret      TEXT        NOT NULL DEFAULT '',
+                api_passphrase  TEXT        NOT NULL DEFAULT '',
+                mode            TEXT        NOT NULL DEFAULT 'demo',
+                is_active       BOOLEAN     NOT NULL DEFAULT TRUE,
+                balance         FLOAT       NOT NULL DEFAULT 10000.0,
+                last_sync_at    TIMESTAMPTZ,
+                created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+
+        # ── server_nodes (multi-server HA) ───────────────────────────────────
+        await self._exec_status("""
+            CREATE TABLE IF NOT EXISTS server_nodes (
+                node_id         TEXT        PRIMARY KEY,
+                hostname        TEXT        NOT NULL DEFAULT '',
+                is_leader       BOOLEAN     NOT NULL DEFAULT FALSE,
+                last_heartbeat  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+
+        # ── trades: add account_id column (nullable — NULL = primary account) ─
+        await self._exec_status(
+            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS account_id TEXT"
+        )
+
         print("[DB] All tables bootstrapped ✅")
 
     # ── Bot status ─────────────────────────────────────────────────────────────
@@ -906,6 +939,133 @@ class DatabaseClient:
         await self._exec_status("""
             UPDATE portfolio_assets SET enabled = $1 WHERE symbol = $2
         """, enabled, symbol.upper())
+
+    # ── Exchange Accounts (Multi-Account Trading) ─────────────────────────────
+
+    async def get_exchange_accounts(self, active_only: bool = False) -> list[dict]:
+        q = "SELECT * FROM exchange_accounts"
+        if active_only:
+            q += " WHERE is_active = TRUE"
+        q += " ORDER BY created_at ASC"
+        rows = await self._exec(q)
+        if not rows:
+            return []
+        out = []
+        for r in rows:
+            row = dict(r)
+            for ts_col in ("created_at", "last_sync_at"):
+                if hasattr(row.get(ts_col), "isoformat"):
+                    row[ts_col] = row[ts_col].isoformat()
+            row.pop("api_secret", None)
+            row.pop("api_passphrase", None)
+            out.append(row)
+        return out
+
+    async def add_exchange_account(self, data: dict) -> dict:
+        import uuid as _uuid
+        aid = str(_uuid.uuid4())
+        await self._exec_status("""
+            INSERT INTO exchange_accounts
+                (id, name, exchange_name, api_key, api_secret, api_passphrase, mode, is_active, balance)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        """,
+            aid,
+            str(data.get("name", "Account")),
+            str(data.get("exchange_name", "mexc")).lower(),
+            str(data.get("api_key", "")),
+            str(data.get("api_secret", "")),
+            str(data.get("api_passphrase", "")),
+            str(data.get("mode", "demo")),
+            bool(data.get("is_active", True)),
+            float(data.get("balance", 10000.0)),
+        )
+        return {"id": aid, **data}
+
+    async def delete_exchange_account(self, account_id: str) -> bool:
+        return await self._exec_status(
+            "DELETE FROM exchange_accounts WHERE id = $1", account_id
+        )
+
+    async def toggle_exchange_account(self, account_id: str, is_active: bool) -> bool:
+        return await self._exec_status(
+            "UPDATE exchange_accounts SET is_active = $1 WHERE id = $2",
+            is_active, account_id
+        )
+
+    async def update_account_balance(self, account_id: str, balance: float) -> bool:
+        return await self._exec_status("""
+            UPDATE exchange_accounts
+            SET balance = $1, last_sync_at = NOW()
+            WHERE id = $2
+        """, balance, account_id)
+
+    # ── Server Nodes (Multi-Server HA) ────────────────────────────────────────
+
+    async def ensure_server_nodes_table(self) -> None:
+        await self._exec_status("""
+            CREATE TABLE IF NOT EXISTS server_nodes (
+                node_id         TEXT        PRIMARY KEY,
+                hostname        TEXT        NOT NULL DEFAULT '',
+                is_leader       BOOLEAN     NOT NULL DEFAULT FALSE,
+                last_heartbeat  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+
+    async def register_server_node(self, node_id: str, hostname: str) -> None:
+        await self._exec_status("""
+            INSERT INTO server_nodes (node_id, hostname, is_leader, last_heartbeat, started_at)
+            VALUES ($1, $2, FALSE, NOW(), NOW())
+            ON CONFLICT (node_id) DO UPDATE
+            SET hostname = $2, last_heartbeat = NOW()
+        """, node_id, hostname)
+
+    async def update_node_heartbeat(self, node_id: str, is_leader: bool) -> None:
+        await self._exec_status("""
+            UPDATE server_nodes
+            SET last_heartbeat = NOW(), is_leader = $1
+            WHERE node_id = $2
+        """, is_leader, node_id)
+
+    async def get_active_nodes(self, timeout_seconds: int = 75) -> list[dict]:
+        rows = await self._exec(f"""
+            SELECT * FROM server_nodes
+            WHERE last_heartbeat > NOW() - INTERVAL '{timeout_seconds} seconds'
+            ORDER BY started_at ASC
+        """)
+        if not rows:
+            return []
+        out = []
+        for r in rows:
+            row = dict(r)
+            for ts in ("last_heartbeat", "started_at"):
+                if hasattr(row.get(ts), "isoformat"):
+                    row[ts] = row[ts].isoformat()
+            out.append(row)
+        return out
+
+    async def get_all_nodes(self) -> list[dict]:
+        rows = await self._exec("SELECT * FROM server_nodes ORDER BY started_at ASC")
+        if not rows:
+            return []
+        out = []
+        for r in rows:
+            row = dict(r)
+            for ts in ("last_heartbeat", "started_at"):
+                if hasattr(row.get(ts), "isoformat"):
+                    row[ts] = row[ts].isoformat()
+            out.append(row)
+        return out
+
+    async def set_node_leader(self, node_id: str) -> None:
+        await self._exec_status("UPDATE server_nodes SET is_leader = FALSE")
+        await self._exec_status(
+            "UPDATE server_nodes SET is_leader = TRUE, last_heartbeat = NOW() WHERE node_id = $1",
+            node_id
+        )
+
+    async def remove_server_node(self, node_id: str) -> None:
+        await self._exec_status("DELETE FROM server_nodes WHERE node_id = $1", node_id)
 
     # ── Zakat ─────────────────────────────────────────────────────────────────
 

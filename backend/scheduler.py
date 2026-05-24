@@ -552,6 +552,28 @@ class TradingScheduler:
                         ),
                     }))
                     closed_trade = {**t2close, "exit_price": current_price, "pnl": pnl, "status": "closed"}
+
+                    # ── Multi-account: replicate SELL close to secondary accounts ─
+                    try:
+                        from multi_account import MultiAccountManager
+                        ma_mgr = MultiAccountManager.get_instance()
+                        if ma_mgr.count() > 0:
+                            sym_qty = float(t2close.get("quantity") or 0)
+                            rep_results = await ma_mgr.replicate_sell(
+                                symbol, sym_qty, current_price, self.db,
+                                t2close.get("id", ""), pnl,
+                            )
+                            ok_count = sum(1 for r in rep_results if r.get("status") == "ok")
+                            if rep_results:
+                                await self._broadcast(json.dumps({
+                                    "type": "log",
+                                    "message": (
+                                        f"🔀 Multi-account SELL: {ok_count}/{len(rep_results)} حساب أغلق {symbol}"
+                                    ),
+                                }))
+                    except Exception as _mae:
+                        print(f"[MultiAccount] Replicate SELL error: {_mae}")
+
                     # ── Auto commentary for SELL-close ────────────────────────
                     try:
                         from trade_commentator import fire_trade_comment
@@ -642,6 +664,29 @@ class TradingScheduler:
                 trade = await self.db.create_trade(trade_data)
                 trades_this_scan += 1
                 await self.db.recalculate_stats()
+
+                # ── Multi-account: replicate BUY to all secondary accounts ────
+                try:
+                    from multi_account import MultiAccountManager
+                    ma_mgr = MultiAccountManager.get_instance()
+                    if ma_mgr.count() > 0:
+                        rep_results = await ma_mgr.replicate_buy(
+                            symbol, quantity, current_price,
+                            self.db, trade.get("id", ""),
+                            reasoning[:80],
+                        )
+                        ok_count  = sum(1 for r in rep_results if r.get("status") == "ok")
+                        err_count = len(rep_results) - ok_count
+                        if rep_results:
+                            await self._broadcast(json.dumps({
+                                "type": "log",
+                                "message": (
+                                    f"🔀 Multi-account: {ok_count}/{len(rep_results)} حساب نسّخ {symbol}"
+                                    + (f" | {err_count} خطأ" if err_count else "")
+                                ),
+                            }))
+                except Exception as _mae:
+                    print(f"[MultiAccount] Replicate BUY error: {_mae}")
 
                 # ── Auto commentary for BUY open ──────────────────────────────
                 try:
