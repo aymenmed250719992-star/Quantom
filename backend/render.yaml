@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: quantom-trading-bot
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: ./backend
+    plan: free
+    region: oregon
+    envVars:
+      - key: EXCHANGE_NAME
+        value: mexc
+      - key: EXCHANGE_MODE
+        value: demo
+      - key: CEX_ALLOW_ALL
+        value: "true"
+      - key: DEX_NETWORK
+        value: base
+      - key: HYBRID_MODE
+        value: auto
+      - key: MIN_CONFIDENCE_SCORE
+        value: "55"
+      - key: MAX_RISK_PERCENT
+        value: "1.5"
+      - key: TARGET_WIN_RATE
+        value: "65"
+      - key: EXCHANGE_STRATEGY
+        value: auto
+      - key: _USE_SSL_RENDER
+        value: "True"
+      - key: SCAN_INTERVAL_MINUTES
+        value: "5"
+      - key: QUANTOM_DB_URL
+        sync: false
