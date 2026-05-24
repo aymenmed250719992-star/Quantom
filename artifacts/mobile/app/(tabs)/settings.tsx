@@ -25,6 +25,7 @@ import {
   getServerDomain,
   saveServerDomain,
   resetServerDomain,
+  fetchRenderDomain,
   DEFAULT_SERVER_DOMAIN,
   safeJson,
 } from "@/constants/api";
@@ -52,10 +53,11 @@ const sh = StyleSheet.create({
 
 function ServerUrlSection() {
   const colors  = useColors();
-  const [url,     setUrl]     = useState(getServerDomain());
-  const [saving,  setSaving]  = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [msg,     setMsg]     = useState("");
+  const [url,       setUrl]       = useState(getServerDomain());
+  const [saving,    setSaving]    = useState(false);
+  const [testing,   setTesting]   = useState(false);
+  const [detecting, setDetecting] = useState(false);
+  const [msg,       setMsg]       = useState("");
 
   const showMsg = (m: string) => { setMsg(m); setTimeout(() => setMsg(""), 4000); };
 
@@ -82,6 +84,21 @@ function ServerUrlSection() {
       showMsg(`❌ تعذّر الاتصال — ${e.message?.slice(0, 60) ?? "خطأ"}`);
     }
     setTesting(false);
+  };
+
+  const handleAutoDetect = async () => {
+    setDetecting(true);
+    showMsg("⏳ أبحث عن رابط Render...");
+    const domain = await fetchRenderDomain();
+    if (domain) {
+      setUrl(domain);
+      await saveServerDomain(domain);
+      showMsg(`✅ تم الكشف تلقائياً: ${domain}`);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } else {
+      showMsg("ℹ️ لم يُنشر على Render بعد — أدخل الرابط يدوياً");
+    }
+    setDetecting(false);
   };
 
   const handleReset = () => {
@@ -118,12 +135,27 @@ function ServerUrlSection() {
         />
       </View>
 
+      {/* ── Auto-detect Render button ── */}
+      <Pressable
+        style={[su.detectBtn, { borderColor: "#F59E0B", opacity: detecting ? 0.6 : 1 }]}
+        onPress={handleAutoDetect}
+        disabled={detecting || saving || testing}
+      >
+        {detecting
+          ? <ActivityIndicator size="small" color="#F59E0B" />
+          : <Feather name="zap" size={13} color="#F59E0B" />
+        }
+        <Text style={[su.testBtnTxt, { color: "#F59E0B" }]}>
+          {detecting ? "جارٍ الكشف..." : "كشف Render تلقائياً"}
+        </Text>
+      </Pressable>
+
       {/* ── Buttons row ── */}
       <View style={{ flexDirection: "row", gap: 8 }}>
         <Pressable
           style={[su.testBtn, { borderColor: "#22C55E", opacity: testing ? 0.6 : 1 }]}
           onPress={handleTest}
-          disabled={testing || saving}
+          disabled={testing || saving || detecting}
         >
           {testing
             ? <ActivityIndicator size="small" color="#22C55E" />
@@ -141,7 +173,7 @@ function ServerUrlSection() {
         <Pressable
           style={[su.saveBtn, { backgroundColor: saving ? colors.muted : "#3B82F6", flex: 1, opacity: saving ? 0.7 : 1 }]}
           onPress={handleSave}
-          disabled={saving || testing}
+          disabled={saving || testing || detecting}
         >
           {saving
             ? <ActivityIndicator size="small" color="#fff" />
@@ -180,6 +212,7 @@ const su = StyleSheet.create({
   inputWrap:   { flexDirection: "row", alignItems: "center", borderRadius: 11, borderWidth: 1.5, paddingLeft: 10, paddingRight: 4 },
   proto:       { fontSize: 12, fontWeight: "600" },
   input:       { flex: 1, height: 46, fontSize: 12, fontFamily: Platform.OS === "ios" ? "Courier New" : "monospace" },
+  detectBtn:   { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, height: 44, borderRadius: 11, borderWidth: 1.5, paddingHorizontal: 14 },
   testBtn:     { flexDirection: "row", alignItems: "center", gap: 6, height: 44, borderRadius: 11, borderWidth: 1.5, paddingHorizontal: 14 },
   testBtnTxt:  { fontSize: 12, fontWeight: "700" },
   resetBtn:    { alignItems: "center", justifyContent: "center", width: 44, height: 44, borderRadius: 11, borderWidth: 1.5 },

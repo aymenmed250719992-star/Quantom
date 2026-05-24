@@ -112,6 +112,23 @@ export async function autoDiscoverServer(force = false): Promise<string | null> 
 
 export const DEFAULT_SERVER_DOMAIN = CANDIDATE_DOMAINS[0] ?? "";
 
+/**
+ * Asks the currently-connected server for its saved Render/production domain.
+ * Useful after deploying to Render: connect to old server → auto-fetch new URL.
+ */
+export async function fetchRenderDomain(): Promise<string | null> {
+  try {
+    const res = await fetch(`${getApiBase()}/domain`, {
+      signal: AbortSignal.timeout(6000),
+    });
+    const d = await safeJson<{ domain?: string; ok?: boolean }>(res);
+    if (d?.domain && d.domain.length > 4) return d.domain;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /** Safe JSON parser — returns null if response is HTML/empty instead of throwing */
 export async function safeJson<T = any>(res: Response): Promise<T | null> {
   try {
