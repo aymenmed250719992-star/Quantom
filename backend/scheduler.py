@@ -569,6 +569,16 @@ class TradingScheduler:
 
         trades_this_scan = 0
 
+        # ── Pre-fetch all open trades once (used in SELL pre-filter) ──────
+        try:
+            _all_open = await self.db.get_trades(limit=300)
+            _open_symbols = {
+                t.get("symbol") for t in _all_open
+                if t.get("status") == "open" and t.get("side") == "buy"
+            }
+        except Exception:
+            _open_symbols = set()
+
         # ── 3. Scan each symbol for signals ───────────────────────────────
         for symbol in symbols:
             try:
@@ -589,10 +599,15 @@ class TradingScheduler:
                 rsi    = indicators.get("rsi", 50)
                 bb_pct = indicators.get("bb_pct", 0.5)
 
-                # ── Pre-filter + startup grace: skip AI unless there's a real signal ──
+                # هل يوجد صفقة BUY مفتوحة لهذا الرمز؟
+                has_open_pos = symbol in _open_symbols
+
+                # ── Pre-filter: تجاهل التحليل إلا إذا كان هناك إشارة حقيقية ──
+                # مهم: إذا كان هناك صفقة مفتوحة، دائماً ادرس إمكانية البيع
                 has_signal = (
-                    rsi <= 40 or rsi >= 60                   # RSI oversold/overbought (relaxed)
-                    or bb_pct <= 0.20 or bb_pct >= 0.80      # Price near BB band edge (relaxed)
+                    rsi <= 40 or rsi >= 55            # أكثر حساسية للبيع (كان 60)
+                    or bb_pct <= 0.20 or bb_pct >= 0.75  # أكثر حساسية (كان 0.80)
+                    or has_open_pos                   # ← الإصلاح الرئيسي: دائماً حلّل إذا في صفقة
                 )
                 if not has_signal or not gemini_enabled:
                     label = "startup warm-up" if not gemini_enabled else f"RSI={rsi:.0f}, BB={bb_pct:.2f}"
@@ -604,6 +619,17 @@ class TradingScheduler:
                     continue
 
                 lessons = await self.db.get_recent_lessons(limit=8)
+
+                # أضف سياق الصفقة المفتوحة للـ indicators حتى يعرف AI أن يقول SELL
+                # (نستخدم _all_open المجلوب مسبقاً لتجنب DB call إضافي)
+                _pre_open_buys = [
+                    t for t in _all_open
+                    if t.get("symbol") == symbol
+                    and t.get("status") == "open"
+                    and t.get("side") == "buy"
+                ]
+                if _pre_open_buys:
+                    indicators["_open_trade"] = _pre_open_buys[0]
 
                 # Throttle Gemini calls — 8s gap keeps us well under 15 req/min free tier
                 await asyncio.sleep(8)
@@ -627,16 +653,52 @@ class TradingScheduler:
                     "confidence": confidence, "message": sig_msg,
                 }))
 
-                if action not in ("BUY", "SELL") or confidence < gemini.min_confidence:
-                    continue
-
                 # ── Spot-only checks ────────────────────────────────────────
                 all_trades     = await self.db.get_trades(limit=500)
                 open_for_sym   = [t for t in all_trades if t.get("symbol") == symbol and t.get("status") == "open"]
+                open_buys      = [t for t in open_for_sym if t.get("side") == "buy"]
+
+                # ── خروج ذكي بالربح: أغلق الصفقة عند الربح حتى لو AI قال HOLD ──────
+                if open_buys and action != "SELL":
+                    t_check = open_buys[0]
+                    entry_p = float(t_check.get("entry_price") or 0)
+                    if entry_p > 0 and current_price > 0:
+                        profit_pct = (current_price - entry_p) / entry_p * 100
+                        macd_h     = indicators.get("macd_histogram", 0)
+
+                        # خروج ذكي: ربح >= 1.5% + RSI مشبع + MACD يتراجع
+                        smart_exit = (
+                            profit_pct >= 1.5 and rsi >= 65 and macd_h < 0
+                        )
+                        # حماية الأرباح: ربح >= 3% + أي إشارة هبوط
+                        profit_protect = (
+                            profit_pct >= 3.0 and (rsi >= 60 or macd_h < 0)
+                        )
+                        # انعكاس خطير: ربح تحوّل لخسارة وشيكة
+                        reversal_risk = (
+                            profit_pct >= 0.5 and rsi >= 72 and macd_h < -0.0001
+                        )
+
+                        if smart_exit or profit_protect or reversal_risk:
+                            exit_reason = (
+                                "Smart Exit" if smart_exit else
+                                "Profit Protect" if profit_protect else
+                                "Reversal Risk"
+                            )
+                            action     = "SELL"
+                            confidence = 80 if profit_protect else 75
+                            reasoning  = f"[{exit_reason}] ربح {profit_pct:.1f}% | RSI={rsi:.0f} | MACD={'↓' if macd_h < 0 else '↑'}"
+                            await self._broadcast(json.dumps({
+                                "type": "signal", "symbol": symbol, "action": "SELL",
+                                "confidence": confidence,
+                                "message": f"📡 {symbol}: SELL ({exit_reason} | ربح {profit_pct:+.2f}%)",
+                            }))
+
+                if action not in ("BUY", "SELL") or confidence < gemini.min_confidence:
+                    continue
 
                 # ── SELL: close open BUY ────────────────────────────────────
                 if action == "SELL":
-                    open_buys = [t for t in open_for_sym if t.get("side") == "buy"]
                     if not open_buys:
                         continue
                     t2close = open_buys[0]

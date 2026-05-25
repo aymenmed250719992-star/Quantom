@@ -654,13 +654,26 @@ class GeminiAgent:
             "MACD near zero — neutral"
         )
 
+        # بناء سياق الصفقة المفتوحة إن وُجدت
+        open_pos_text = ""
+        open_trade = indicators.get("_open_trade")
+        if open_trade:
+            entry_p    = float(open_trade.get("entry_price") or 0)
+            cur_p      = indicators.get("current_price", 0)
+            profit_pct = ((cur_p - entry_p) / entry_p * 100) if entry_p > 0 else 0
+            open_pos_text = (
+                f"\n⚠️  OPEN POSITION: BUY @ ${entry_p:.4f} | "
+                f"Current PnL: {profit_pct:+.2f}% | "
+                f"You MUST consider SELL to lock profits or cut losses.\n"
+            )
+
         return f"""{TRADING_KNOWLEDGE}
 
 ━━━ CURRENT ANALYSIS REQUEST ━━━
 Symbol: {symbol}
 Price: ${indicators.get('current_price', 0):.4f} ({indicators.get('price_change_pct', 0):+.2f}%)
 Market: {indicators.get('market_condition', 'unknown').upper()}
-
+{open_pos_text}
 INDICATORS:
 • RSI(14): {rsi:.2f} → {rsi_signal}
 • MACD: {indicators.get('macd', 0):.6f} | Signal: {indicators.get('macd_signal', 0):.6f} | Hist: {macd_hist:.6f} → {macd_signal}
@@ -761,8 +774,8 @@ Answer in the same language as the user. Be specific, 4-6 sentences."""
         # ── 1. RSI ────────────────────────────────────────────────────────────
         if rsi < 28:   buy_s += 2; sigs.append(f"RSI strongly oversold({rsi:.0f})")
         elif rsi < 40: buy_s += 1; sigs.append(f"RSI oversold({rsi:.0f})")
-        elif rsi > 72: sell_s += 2; sigs.append(f"RSI strongly overbought({rsi:.0f})")
-        elif rsi > 60: sell_s += 1; sigs.append(f"RSI overbought({rsi:.0f})")
+        elif rsi > 68: sell_s += 2; sigs.append(f"RSI strongly overbought({rsi:.0f})")  # كان 72
+        elif rsi > 57: sell_s += 1; sigs.append(f"RSI overbought({rsi:.0f})")           # كان 60
 
         # ── 2. MACD histogram ─────────────────────────────────────────────────
         if macd_h > 0.0001:    buy_s += 1; sigs.append("MACD bullish")
@@ -808,8 +821,9 @@ Answer in the same language as the user. Be specific, 4-6 sentences."""
                 "stop_loss_percent": 1.5, "take_profit_percent": 3.0,
                 "pattern": "rule-based oversold",
             }
-        if total_sell >= 3 and total_sell > total_buy:
-            conf = min(82, 52 + total_sell * 6)
+        # SELL: خُفِّضت من 3 إشارات إلى 2 لأن البيع أسهل تقنياً من الشراء
+        if total_sell >= 2 and total_sell > total_buy:
+            conf = min(80, 50 + total_sell * 7)
             return {
                 "action": "SELL", "symbol": symbol, "confidence": conf,
                 "reasoning": prefix + ", ".join(sigs),
