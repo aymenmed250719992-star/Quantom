@@ -78,4 +78,4 @@ EXPO_TOKEN = "S-r15h0EmaHEJFojYqCpa1NcnOsSrfMN6NCMsKDv"
 
 [nix]
 channel = "stable-25_05"
-packages = ["glibcLocales", "libxcrypt", "postgresql"]
+packages = ["glibcLocales", "libxcrypt", "postgresql", "eas-cli"]

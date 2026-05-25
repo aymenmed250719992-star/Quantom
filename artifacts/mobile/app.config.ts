@@ -1,6 +1,7 @@
 import { ExpoConfig, ConfigContext } from "expo/config";
 
 const PROD_DOMAIN = (process.env.EXPO_PUBLIC_DOMAIN ?? "").replace(/^https?:\/\//, "").replace(/\/+$/, "");
+const PROJECT_ID = "852966ee-aec0-4e74-85a9-ee6093dd8fd7";
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
@@ -16,6 +17,15 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     image: "./assets/images/icon.png",
     resizeMode: "contain",
     backgroundColor: "#0A0A0A",
+  },
+  updates: {
+    url: `https://u.expo.dev/${PROJECT_ID}`,
+    enabled: true,
+    checkAutomatically: "ON_LOAD",
+    fallbackToCacheTimeout: 0,
+  },
+  runtimeVersion: {
+    policy: "appVersion",
   },
   ios: {
     supportsTablet: false,
@@ -46,6 +56,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     ],
     "expo-font",
     "expo-web-browser",
+    "expo-updates",
   ],
   experiments: {
     typedRoutes: true,
@@ -54,7 +65,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   extra: {
     EXPO_PUBLIC_DOMAIN: PROD_DOMAIN,
     eas: {
-      projectId: "852966ee-aec0-4e74-85a9-ee6093dd8fd7",
+      projectId: PROJECT_ID,
     },
   },
   owner: "quantom23",

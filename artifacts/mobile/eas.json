@@ -1,10 +1,11 @@
 {
   "cli": {
-    "version": ">= 18.0.0",
+    "version": ">= 14.0.0",
     "appVersionSource": "local"
   },
   "build": {
     "apk": {
+      "channel": "production",
       "distribution": "internal",
       "android": {
         "buildType": "apk"
@@ -14,6 +15,7 @@
       }
     },
     "preview": {
+      "channel": "preview",
       "distribution": "internal",
       "android": {
         "buildType": "apk"
@@ -23,6 +25,7 @@
       }
     },
     "production": {
+      "channel": "production",
       "distribution": "internal",
       "android": {
         "buildType": "apk"
@@ -30,9 +33,6 @@
       "env": {
         "EXPO_PUBLIC_DOMAIN": "3b00151b-aeaf-458a-995b-6b3c4f58c391-00-16zyoz82rgdwb.riker.replit.dev"
       }
-    },
-    "update": {
-      "channel": "production"
     }
   },
   "submit": {
