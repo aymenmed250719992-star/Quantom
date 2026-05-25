@@ -138,6 +138,20 @@ async def lifespan(app: FastAPI):
     except Exception as _sd:
         print(f"[Startup] Domain register warning: {_sd}")
 
+    # ── Trading Company: init multi-agent orchestrator ──────────────────────
+    try:
+        from trading_company import TradingCompany
+        from crowd_sim import CrowdSimulator
+        from max_hermes import MaxHermes
+        company = TradingCompany.get_instance()
+        company.set_db(db)
+        company.set_broadcast_fn(manager.broadcast)
+        CrowdSimulator.get_instance(1000)
+        MaxHermes.get_instance(db)
+        print("[Startup] Trading Company ready — 6 departments | CrowdSim(1000) | MaxHermes ✅")
+    except Exception as _tc:
+        print(f"[Startup] Trading Company init warning: {_tc}")
+
     # ── Auto-resume: if bot was running before restart, start it again ──────
     saved = await db.get_bot_status()
     if saved.get("is_running", False):
@@ -2536,6 +2550,171 @@ async def get_cluster_nodes():
         }
     except Exception as e:
         return {"this_node": nc.get_status(), "nodes": [], "error": str(e)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ── TRADING COMPANY — Multi-Agent Endpoints ────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class CompanyAnalyzeRequest(BaseModel):
+    symbol:           str   = "BTC/USDT"
+    price:            float = 0.0
+    rsi:              float = 50.0
+    price_change_24h: float = 0.0
+    price_change_1h:  float = 0.0
+    volume_ratio:     float = 1.0
+    bb_position:      float = 0.0
+
+
+@router.get("/company/status")
+async def get_company_status():
+    """حالة كل أقسام شركة التداول."""
+    try:
+        from trading_company import TradingCompany
+        company = TradingCompany.get_instance()
+        return company.get_company_status()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/company/analyze")
+async def company_full_analysis(req: CompanyAnalyzeRequest):
+    """
+    تشغيل التحليل الشامل: Gemini (أخبار) + MiroFish (جماهير) + MaxHermes (ذاكرة) + Groq (قرار).
+    إذا price=0 يجلب السعر الحالي تلقائياً.
+    """
+    try:
+        from trading_company import TradingCompany
+        from bybit_client import ExchangeClient
+        company = TradingCompany.get_instance()
+        company.set_db(db)
+        company.set_broadcast_fn(manager.broadcast)
+
+        price = req.price
+        if price <= 0:
+            try:
+                client = ExchangeClient.get_instance()
+                price = await client.get_current_price(req.symbol)
+            except Exception:
+                price = 0.0
+
+        result = await company.full_analysis(
+            symbol           = req.symbol,
+            price            = price,
+            rsi              = req.rsi,
+            price_change_24h = req.price_change_24h,
+            price_change_1h  = req.price_change_1h,
+            volume_ratio     = req.volume_ratio,
+            bb_position      = req.bb_position,
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/company/decisions")
+async def get_company_decisions(limit: int = 20):
+    """آخر قرارات شركة التداول."""
+    try:
+        from trading_company import TradingCompany
+        company = TradingCompany.get_instance()
+        return {"decisions": company.get_recent_decisions(limit)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/crowd/latest")
+async def get_crowd_latest():
+    """آخر نتيجة محاكاة الجماهير (MiroFish)."""
+    try:
+        from crowd_sim import CrowdSimulator
+        sim = CrowdSimulator.get_instance()
+        if sim.last_result:
+            return sim.last_result
+        # لا نتيجة بعد — نُرجع حالة المحاكي
+        return {
+            "crowd_signal": "NEUTRAL",
+            "bullish_pct":  50.0,
+            "bearish_pct":  50.0,
+            "neutral_pct":  0.0,
+            "n_traders":    sim.n_traders,
+            "fear_greed_index": 0.5,
+            "market_psychology": "لم يُشغَّل بعد — اضغط تحليل شامل",
+            "whale_action":  "hold",
+            "whale_divergence": False,
+            "recommendation": "شغّل التحليل الشامل أولاً",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/crowd/simulate")
+async def run_crowd_simulation(req: CompanyAnalyzeRequest):
+    """يُشغّل محاكاة الجماهير فقط بدون بقية الأقسام."""
+    try:
+        from crowd_sim import CrowdSimulator
+        sim = CrowdSimulator.get_instance()
+        price = req.price
+        if price <= 0:
+            try:
+                from bybit_client import ExchangeClient
+                price = await ExchangeClient.get_instance().get_current_price(req.symbol)
+            except Exception:
+                price = 0.0
+        result = await __import__("asyncio").to_thread(
+            sim.simulate,
+            req.symbol, price, req.price_change_1h,
+            req.price_change_24h, req.rsi,
+            req.volume_ratio, 0.0, req.bb_position,
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ExcelUploadRequest(BaseModel):
+    filename:     str   = "data.xlsx"
+    base64_data:  str   = ""
+
+
+@router.post("/max-hermes/excel")
+async def max_hermes_excel(req: ExcelUploadRequest):
+    """MaxHermes يحلل ملف Excel/CSV ويستخرج رؤى."""
+    try:
+        import base64
+        from max_hermes import MaxHermes
+        hermes = MaxHermes.get_instance(db)
+
+        if not req.base64_data:
+            raise HTTPException(status_code=400, detail="base64_data مطلوب")
+
+        file_bytes = base64.b64decode(req.base64_data)
+        result = await hermes.analyze_excel(file_bytes, req.filename)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/max-hermes/report")
+async def max_hermes_report(period_days: int = 7):
+    """MaxHermes يُولّد تقريراً مالياً شاملاً."""
+    try:
+        from max_hermes import MaxHermes
+        hermes = MaxHermes.get_instance(db)
+        return await hermes.generate_report(period_days)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/max-hermes/status")
+async def max_hermes_status():
+    """حالة MaxHermes."""
+    try:
+        from max_hermes import MaxHermes
+        hermes = MaxHermes.get_instance(db)
+        return hermes.get_status()
+    except Exception as e:
+        return {"active": False, "error": str(e)}
 
 
 @router.websocket("/ws")

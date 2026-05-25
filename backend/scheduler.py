@@ -68,16 +68,123 @@ class TradingScheduler:
             max_instances=1,
             coalesce=True,
         )
+
+        # ── Gemini periodic news polling (every 15 min) ──────────────────────
+        try:
+            self.scheduler.remove_job("gemini_news_poll")
+        except Exception:
+            pass
+        self.scheduler.add_job(
+            self._poll_gemini_news,
+            "interval",
+            minutes=15,
+            id="gemini_news_poll",
+            next_run_time=datetime.now(),
+            max_instances=1,
+            coalesce=True,
+        )
+
+        # ── Crowd simulation background refresh (every 10 min) ──────────────
+        try:
+            self.scheduler.remove_job("crowd_refresh")
+        except Exception:
+            pass
+        self.scheduler.add_job(
+            self._refresh_crowd_sim,
+            "interval",
+            minutes=10,
+            id="crowd_refresh",
+            next_run_time=datetime.now(),
+            max_instances=1,
+            coalesce=True,
+        )
+
         self._running = True
 
     def stop(self) -> None:
         if not self._running:
             return
-        try:
-            self.scheduler.remove_job("market_scan")
-        except Exception:
-            pass
+        for job_id in ("market_scan", "gemini_news_poll", "crowd_refresh"):
+            try:
+                self.scheduler.remove_job(job_id)
+            except Exception:
+                pass
         self._running = False
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Gemini Periodic News Polling
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _poll_gemini_news(self) -> None:
+        """
+        Gemini يرصد الأخبار كل 15 دقيقة ويُحدّث cache شركة التداول.
+        يعمل حتى لو لم يكن الـ autopilot مشغّلاً.
+        """
+        symbols_env = os.environ.get("TRADING_SYMBOLS", "BTC/USDT,ETH/USDT")
+        primary_symbol = symbols_env.split(",")[0].strip() if symbols_env else "BTC/USDT"
+        try:
+            from trading_company import TradingCompany
+            company = TradingCompany.get_instance()
+            company.set_db(self.db)
+            intel = await company.fetch_intelligence(primary_symbol)
+            news_score = intel.get("news_score", 0.0)
+            fear_greed = intel.get("fear_greed", 50)
+            summary    = intel.get("news_summary", "")[:120]
+            print(f"[GeminiPoll] {primary_symbol} — score:{news_score:.2f} | F&G:{fear_greed} | {summary}")
+            await self._broadcast(json.dumps({
+                "type":    "log",
+                "message": f"📰 Gemini News Poll — {primary_symbol}: {summary[:80]}",
+            }))
+        except Exception as e:
+            print(f"[GeminiPoll] error: {e}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Crowd Simulation Refresh
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def _refresh_crowd_sim(self) -> None:
+        """
+        MiroFish يُحدّث محاكاة 1000 متداول وهمي كل 10 دقائق.
+        """
+        symbols_env = os.environ.get("TRADING_SYMBOLS", "BTC/USDT,ETH/USDT")
+        primary_symbol = symbols_env.split(",")[0].strip() if symbols_env else "BTC/USDT"
+        try:
+            from crowd_sim import CrowdSimulator
+            from bybit_client import ExchangeClient
+
+            sim    = CrowdSimulator.get_instance()
+            client = ExchangeClient.get_instance()
+            price  = await client.get_current_price(primary_symbol)
+            if price <= 0:
+                return
+
+            # احسب RSI تقريبي من السعر الحالي وآخر سعر محفوظ
+            rsi = 50.0
+            try:
+                import ta
+                import pandas as pd
+                ohlcv = await client.get_ohlcv(primary_symbol, timeframe="1h", limit=20)
+                if ohlcv and len(ohlcv) >= 15:
+                    closes = pd.Series([c[4] for c in ohlcv])
+                    rsi_series = ta.momentum.RSIIndicator(closes, window=14).rsi()
+                    rsi = float(rsi_series.iloc[-1])
+            except Exception:
+                pass
+
+            result = await __import__("asyncio").to_thread(
+                sim.simulate, primary_symbol, price,
+                0.0, 0.0, rsi, 1.0, 0.0, 0.0,
+            )
+            signal = result.get("crowd_signal", "NEUTRAL")
+            bull   = result.get("bullish_pct",  50)
+            bear   = result.get("bearish_pct",  50)
+            print(f"[CrowdSim] {primary_symbol} — {signal} | 🐂{bull:.0f}% / 🐻{bear:.0f}%")
+            await self._broadcast(json.dumps({
+                "type":    "log",
+                "message": f"🐟 MiroFish — {primary_symbol}: {signal} | 🐂{bull:.0f}% 🐻{bear:.0f}%",
+            }))
+        except Exception as e:
+            print(f"[CrowdSim] refresh error: {e}")
 
     async def _broadcast(self, message: str) -> None:
         if self._broadcast_fn:

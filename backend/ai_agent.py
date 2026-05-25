@@ -904,3 +904,44 @@ You ARE "Quantom V2 Core" — the hyper-intelligent quantitative trading brain s
             f"• PnL: ${total_pnl:+.4f} | فوز: {win_rate:.1f}%\n\n"
             "اسألني عن الأداء، الصفقات المفتوحة، الاستراتيجية، أو التداول الحلال."
         )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # prompt_by_provider — استدعاء مزود محدد مباشرةً (للشركة متعددة الوكلاء)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    async def prompt_by_provider(
+        self,
+        prompt:            str,
+        preferred_provider: str = "groq",
+        system:            str = "",
+        max_retries:       int = 2,
+    ) -> str:
+        """
+        يستدعي مزود AI محدد (groq / gemini / claude / ...).
+        يُستخدم من trading_company لتوزيع المهام على الـ APIs.
+        """
+        import asyncio
+
+        # ابحث عن slot بالمزود المطلوب أولاً
+        preferred_slots = [s for s in self._slots if s.provider == preferred_provider and s.available]
+        fallback_slots  = [s for s in self._slots if s.provider != preferred_provider and s.available]
+        ordered_slots   = preferred_slots + fallback_slots
+
+        if not ordered_slots:
+            return f"[No {preferred_provider} key available]"
+
+        sys_prompt = system or GENERAL_SYSTEM_PROMPT
+
+        for slot in ordered_slots[:max_retries + 1]:
+            try:
+                result = await asyncio.to_thread(slot.call, sys_prompt, prompt, 0.7)
+                slot.success_calls += 1
+                return result
+            except Exception as e:
+                slot.failed_calls += 1
+                err = str(e).lower()
+                if any(x in err for x in ["429", "quota", "rate_limit", "exhausted"]):
+                    slot.mark_exhausted(300)
+                continue
+
+        return "[All providers failed]"
