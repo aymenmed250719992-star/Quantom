@@ -186,17 +186,17 @@ async def lifespan(app: FastAPI):
     # ── Self-pinger: keeps server awake (Replit + Render) ───────────────────
     async def _keep_alive_loop():
         import httpx
-        # Prefer Replit domain, fall back to Render, else localhost
+        # Always ping localhost internally — avoids SSL issues on Replit
+        ping_url = "http://localhost:5000/trade/ping"
         replit_url = os.environ.get("REPLIT_DEV_DOMAIN", "") or os.environ.get("REPLIT_DOMAINS", "")
         render_url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
         if replit_url:
-            clean_replit = replit_url.split(",")[0].strip().rstrip("/")
-            ping_url = f"https://{clean_replit}/trade/ping"
+            display_url = f"https://{replit_url.split(',')[0].strip().rstrip('/')}/trade/ping"
         elif render_url:
-            ping_url = f"{render_url}/trade/ping"
+            display_url = f"{render_url}/trade/ping"
         else:
-            ping_url = "http://localhost:5000/trade/ping"
-        print(f"[KeepAlive] Will ping → {ping_url} every 4 min")
+            display_url = ping_url
+        print(f"[KeepAlive] Will ping → {display_url} every 4 min")
         await asyncio.sleep(60)  # wait 1 min after startup before first ping
         while True:
             try:
