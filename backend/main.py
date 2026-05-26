@@ -16,6 +16,7 @@ from bybit_client import ExchangeClient
 from database import DatabaseClient
 from exchange_router import ExchangeRouter, EXCHANGE_CONFIGS
 from scheduler import TradingScheduler
+import meta_engine
 
 db = DatabaseClient()
 scheduler_instance = TradingScheduler(db)
@@ -947,8 +948,80 @@ async def brain_chat_endpoint(request: BrainChatRequest):
         except Exception as _ce:
             print(f"[BrainChat] Command exec error: {_ce}")
 
+    # ── Meta Engine: execute file/sql/shell commands ───────────────────────
+    meta_results: list[str] = []
+    all_cmds = result.get("all_commands", [])
+    meta_cmds = [c for c in all_cmds if c.get("type") == "meta"]
+
+    # Phase 1 — reads (read_file / list_files)
+    read_context: dict[str, str] = {}
+    for mc in meta_cmds:
+        op  = mc.get("operation", "")
+        val = mc.get("value", "")
+        if op == "read_file" and val:
+            content = meta_engine.read_file(val)
+            read_context[val] = content
+        elif op == "list_files" and val:
+            listing = meta_engine.list_files(val)
+            read_context[f"dir:{val}"] = listing
+
+    # Phase 2 — if reads happened, re-call AI with file contents
+    if read_context:
+        ctx_block = "\n\n".join(
+            f"=== {k} ===\n{v}" for k, v in read_context.items()
+        )
+        augmented = (
+            f"{request.message}\n\n"
+            f"[نتائج القراءة — استخدمها الآن للتعديل]:\n{ctx_block}"
+        )
+        try:
+            result2 = await agent_inst.brain_chat(
+                augmented, trades, status, memory_summary,
+                history=history_ordered,
+            )
+            result = result2
+            # Re-collect meta commands from phase-2 response
+            all_cmds  = result.get("all_commands", [])
+            meta_cmds = [c for c in all_cmds if c.get("type") == "meta"]
+        except Exception as _me2:
+            print(f"[Meta] Phase-2 brain_chat error: {_me2}")
+
+    # Phase 3 — write / sql / shell (after possible phase-2 re-call)
+    for mc in meta_cmds:
+        op = mc.get("operation", "")
+        if op == "write_file":
+            path    = mc.get("path", mc.get("value", ""))
+            content = mc.get("content", "")
+            if path and content:
+                res = meta_engine.write_file(path, content)
+                meta_results.append(res)
+                print(f"[Meta] write_file: {res}")
+        elif op == "exec_sql":
+            val = mc.get("value", "")
+            if val:
+                res = await meta_engine.exec_sql(val, db)
+                meta_results.append(f"🗄️ SQL:\n{res}")
+                print(f"[Meta] exec_sql done")
+        elif op == "exec_shell":
+            val = mc.get("value", "")
+            if val:
+                res = await meta_engine.exec_shell(val)
+                meta_results.append(f"🖥️ Shell:\n{res}")
+                print(f"[Meta] exec_shell done")
+
+    if meta_results:
+        await manager.broadcast(json.dumps({
+            "type": "log",
+            "message": f"🔧 Meta Engine: {len(meta_results)} عملية نُفِّذت",
+        }))
+
     brain_answer   = result.get("response", "")
     brain_provider = result.get("provider", "")
+
+    # Append meta results to brain answer
+    if meta_results:
+        meta_block = "\n\n---\n🔧 **نتائج التنفيذ:**\n" + "\n\n".join(meta_results)
+        brain_answer = (brain_answer + meta_block).strip()
     # Save assistant response
     await db.save_message(
         role="assistant",
@@ -970,7 +1043,67 @@ async def brain_chat_endpoint(request: BrainChatRequest):
         "provider":          brain_provider,
         "key":               result.get("key"),
         "executed_command":  executed_command,
+        "meta_count":        len(meta_results),
     }
+
+
+# ── Meta Engine — Direct control endpoint ─────────────────────────────────────
+
+class MetaRequest(BaseModel):
+    operation: str          # read_file | write_file | list_files | exec_sql | exec_shell
+    path: Optional[str] = None
+    content: Optional[str] = None
+    query: Optional[str] = None
+    command: Optional[str] = None
+
+
+@router.post("/meta/execute")
+async def meta_execute(req: MetaRequest):
+    """Direct Meta Engine execution — absolute infrastructure control."""
+    op = req.operation.lower().strip()
+    try:
+        if op == "read_file":
+            if not req.path:
+                raise HTTPException(status_code=400, detail="path required")
+            result = meta_engine.read_file(req.path)
+            return {"operation": op, "result": result, "success": True}
+
+        elif op == "write_file":
+            if not req.path or req.content is None:
+                raise HTTPException(status_code=400, detail="path and content required")
+            result = meta_engine.write_file(req.path, req.content)
+            return {"operation": op, "result": result, "success": "❌" not in result}
+
+        elif op == "list_files":
+            if not req.path:
+                raise HTTPException(status_code=400, detail="path required")
+            result = meta_engine.list_files(req.path)
+            return {"operation": op, "result": result, "success": True}
+
+        elif op == "exec_sql":
+            q = req.query or req.content or ""
+            if not q:
+                raise HTTPException(status_code=400, detail="query required")
+            result = await meta_engine.exec_sql(q, db)
+            return {"operation": op, "result": result, "success": "❌" not in result}
+
+        elif op == "exec_shell":
+            cmd = req.command or req.content or ""
+            if not cmd:
+                raise HTTPException(status_code=400, detail="command required")
+            result = await meta_engine.exec_shell(cmd)
+            return {"operation": op, "result": result, "success": True}
+
+        elif op == "project_map":
+            return {"operation": op, "result": meta_engine.PROJECT_MAP, "success": True}
+
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown operation: {op}")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"operation": op, "result": f"❌ Error: {e}", "success": False}
 
 
 @router.get("/conversations")

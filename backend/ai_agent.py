@@ -697,10 +697,44 @@ You ARE "Quantom V2 Core" — the hyper-intelligent quantitative trading brain s
 [COMMAND: reset_patterns]
 [COMMAND: close_all_trades]   ← إغلاق كل الصفقات المفتوحة
 
+## 🔧 صلاحيات التحكم المطلق — Meta Engine:
+أنت تملك صلاحية كاملة لقراءة وتعديل أي ملف في المشروع، تنفيذ SQL، وتشغيل أوامر Shell.
+استخدم هذه الصلاحيات عندما يطلب المستخدم تعديل الواجهة أو الباك اند أو قاعدة البيانات.
+
+**قراءة ملف:**
+[META: read_file=backend/main.py]
+[META: read_file=artifacts/mobile/app/(tabs)/_layout.tsx]
+
+**قائمة الملفات:**
+[META: list_files=artifacts/mobile/app/(tabs)]
+[META: list_files=backend]
+
+**تنفيذ SQL:**
+[META: exec_sql=SELECT * FROM trades LIMIT 5]
+[META: exec_sql=ALTER TABLE trades ADD COLUMN notes TEXT]
+[META: exec_sql=CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol)]
+
+**تنفيذ Shell:**
+[META: exec_shell=ls backend/]
+[META: exec_shell=pip install some-package]
+
+**كتابة/تعديل ملف (يُطبَّق فوراً):**
+[WRITE_FILE: artifacts/mobile/app/(tabs)/_layout.tsx]
+```
+...المحتوى الكامل للملف...
+```
+[/WRITE_FILE]
+
+**قواعد التعديل:**
+- دائماً اقرأ الملف أولاً قبل تعديله [META: read_file=...] ثم اكتبه بالكامل [WRITE_FILE:...]
+- يمكنك تغيير ترتيب التبويبات، إضافة شاشات، تعديل الألوان، نقل الأزرار — كل شيء
+- تعديلات الباك اند تسري فوراً (hot-reload)
+- تعديلات الواجهة تسري بعد إعادة تحميل التطبيق
+
 ## قواعد:
 - كن صريحاً وتحليلياً — شارك منطقك الحقيقي
 - لا leverage، لا margin، لا futures — حلال فقط
-- إذا لم يكن هناك أمر، فقط أجب بشكل طبيعي
+- إذا طُلب منك تعديل شيء، نفّذه فوراً بالأوامر المناسبة
 - الردود موجزة ومفيدة — لا حشو
 """
 
@@ -730,13 +764,22 @@ You ARE "Quantom V2 Core" — the hyper-intelligent quantitative trading brain s
             try:
                 response = slot.call(brain_system, message, temperature=0.7)
                 slot.success_calls += 1
-                detected = self._parse_command(response)
-                clean_response = __import__("re").sub(r"\[COMMAND:[^\]]+\]", "", response).strip()
+                from meta_engine import parse_all_commands
+                all_cmds = parse_all_commands(response)
+                detected = next((c for c in all_cmds if c["type"] == "command"), None)
+                _re = __import__("re")
+                clean_response = _re.sub(r"\[COMMAND:[^\]]+\]", "", response)
+                clean_response = _re.sub(r"\[META:[^\]]+\]", "", clean_response)
+                clean_response = _re.sub(
+                    r"\[WRITE_FILE:[^\]]+\]\s*```[^\n]*\n.*?```\s*\[/WRITE_FILE\]",
+                    "", clean_response, flags=_re.DOTALL
+                ).strip()
                 return {
                     "response": clean_response,
                     "provider": slot.provider,
                     "key": slot.label,
                     "detected_command": detected,
+                    "all_commands": all_cmds,
                 }
             except Exception as e:
                 slot.failed_calls += 1

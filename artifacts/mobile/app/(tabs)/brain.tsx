@@ -1152,7 +1152,7 @@ export default function BrainScreen() {
           }}
         />
 
-        {/* Quick command chips */}
+        {/* Quick command chips — Trading + Meta */}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -1160,20 +1160,23 @@ export default function BrainScreen() {
           contentContainerStyle={{ paddingHorizontal: 12, gap: 6 }}
         >
           {[
-            "كيف أداؤك الآن؟",
-            "غيّر إلى Scalping",
-            "ارفع حد الثقة إلى 65%",
-            "لماذا لم تفتح صفقات؟",
-            "أوقف البوت",
-            "استئناف العمل",
-            "ما أفضل صفقة اليوم؟",
+            { label: "📊 أداؤك الآن",          msg: "كيف أداؤك الآن؟ اعطني تقرير شامل" },
+            { label: "⚡ غيّر Scalping",        msg: "غيّر الاستراتيجية إلى Scalping فوراً" },
+            { label: "🛡️ ارفع حد الثقة 65%",   msg: "ارفع حد الثقة إلى 65%" },
+            { label: "⏸️ أوقف البوت",           msg: "أوقف البوت الآن" },
+            { label: "▶️ استأنف العمل",         msg: "استأنف العمل" },
+            { label: "📂 اعرض ملفات الواجهة",   msg: "اعرض لي قائمة ملفات artifacts/mobile/app/(tabs)" },
+            { label: "🗄️ آخر 5 صفقات DB",       msg: "نفّذ: SELECT symbol, side, status, pnl FROM trades ORDER BY created_at DESC LIMIT 5" },
+            { label: "🔧 خريطة المشروع",         msg: "اعرض لي خريطة المشروع الكاملة" },
+            { label: "🎨 عدّل لون التبويب",      msg: "اقرأ ملف artifacts/mobile/app/(tabs)/_layout.tsx ثم أخبرني بترتيب التبويبات الحالي" },
+            { label: "🧠 ما تعلمته؟",            msg: "ما الدروس التي تعلمتها حتى الآن؟" },
           ].map(chip => (
             <Pressable
-              key={chip}
-              onPress={() => sendBrainMessage(chip)}
+              key={chip.label}
+              onPress={() => sendBrainMessage(chip.msg)}
               style={[s.chip, { backgroundColor: `#6366F118`, borderColor: `#6366F144` }]}
             >
-              <Text style={[s.chipTxt, { color: "#6366F1" }]}>{chip}</Text>
+              <Text style={[s.chipTxt, { color: "#6366F1" }]}>{chip.label}</Text>
             </Pressable>
           ))}
         </ScrollView>
@@ -1182,7 +1185,7 @@ export default function BrainScreen() {
         <View style={[s.chatInputRow, { borderTopColor: colors.border, paddingBottom: bottomPad + 6 }]}>
           <TextInput
             style={[s.chatInput, { backgroundColor: colors.card, color: colors.foreground, borderColor: colors.border }]}
-            placeholder="وجّه العقل أو اسأله أي شيء..."
+            placeholder="أمر البوت بأي شيء — ملفات، SQL، واجهة، باك اند..."
             placeholderTextColor={colors.mutedForeground}
             value={chatInput}
             onChangeText={setChatInput}
