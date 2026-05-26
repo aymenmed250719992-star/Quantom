@@ -75,7 +75,10 @@ function ServerUrlSection() {
   const handleTest = async () => {
     setTesting(true); setMsg("⏳ جارٍ اختبار الاتصال...");
     try {
-      const r = await fetch(`https://${url.replace(/^https?:\/\//, "")}/trade/health`, { signal: AbortSignal.timeout(8000) });
+      const ctrl = new AbortController();
+      const _t = setTimeout(() => ctrl.abort(), 8000);
+      const r = await fetch(`https://${url.replace(/^https?:\/\//, "")}/trade/health`, { signal: ctrl.signal });
+      clearTimeout(_t);
       const d = await safeJson(r);
       showMsg(d && d.health_score !== undefined
         ? `✅ متصل — صحة النظام: ${d.health_score}%`

@@ -463,7 +463,8 @@ export default function AccountsScreen() {
   const fetchAccounts = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
     try {
-      const r = await fetch(`${getApiBase()}/accounts`, { signal: AbortSignal.timeout(8000) });
+      const _c1 = new AbortController(); setTimeout(() => _c1.abort(), 8000);
+      const r = await fetch(`${getApiBase()}/accounts`, { signal: _c1.signal });
       const d = await safeJson(r);
       if (d?.accounts) {
         setAccounts(d.accounts);
@@ -475,7 +476,8 @@ export default function AccountsScreen() {
   const fetchBalances = useCallback(async () => {
     setBalLoading(true);
     try {
-      const r = await fetch(`${getApiBase()}/accounts/balances`, { signal: AbortSignal.timeout(15000) });
+      const _c2 = new AbortController(); setTimeout(() => _c2.abort(), 15000);
+      const r = await fetch(`${getApiBase()}/accounts/balances`, { signal: _c2.signal });
       const d = await safeJson(r);
       if (d?.accounts) {
         const map: Record<string, number> = {};

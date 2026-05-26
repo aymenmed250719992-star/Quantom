@@ -119,7 +119,7 @@ export const DEFAULT_SERVER_DOMAIN = CANDIDATE_DOMAINS[0] ?? "";
 export async function fetchRenderDomain(): Promise<string | null> {
   try {
     const res = await fetch(`${getApiBase()}/domain`, {
-      signal: AbortSignal.timeout(6000),
+      signal: (() => { const c = new AbortController(); setTimeout(() => c.abort(), 6000); return c.signal; })(),
     });
     const d = await safeJson<{ domain?: string; ok?: boolean }>(res);
     if (d?.domain && d.domain.length > 4) return d.domain;
