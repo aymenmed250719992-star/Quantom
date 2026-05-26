@@ -55,6 +55,10 @@ export function resetServerDomain(): void {
   AsyncStorage.removeItem(AUTO_DISCOVER_KEY).catch(() => {});
 }
 
+export function hasDomain(): boolean {
+  return _domain.length > 4;
+}
+
 async function pingDomain(domain: string, timeoutMs = 5000): Promise<boolean> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);

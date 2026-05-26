@@ -11,7 +11,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_DOMAIN": "3b00151b-aeaf-458a-995b-6b3c4f58c391-00-16zyoz82rgdwb.riker.replit.dev"
+        "EXPO_PUBLIC_DOMAIN": "3b00151b-aeaf-458a-995b-6b3c4f58c391-00-16zyoz82rgdwb-ogplo9hz.riker.replit.dev"
       }
     },
     "preview": {
@@ -21,7 +21,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_DOMAIN": "3b00151b-aeaf-458a-995b-6b3c4f58c391-00-16zyoz82rgdwb.riker.replit.dev"
+        "EXPO_PUBLIC_DOMAIN": "3b00151b-aeaf-458a-995b-6b3c4f58c391-00-16zyoz82rgdwb-ogplo9hz.riker.replit.dev"
       }
     },
     "production": {
@@ -31,7 +31,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_DOMAIN": "3b00151b-aeaf-458a-995b-6b3c4f58c391-00-16zyoz82rgdwb.riker.replit.dev"
+        "EXPO_PUBLIC_DOMAIN": "3b00151b-aeaf-458a-995b-6b3c4f58c391-00-16zyoz82rgdwb-ogplo9hz.riker.replit.dev"
       }
     }
   },

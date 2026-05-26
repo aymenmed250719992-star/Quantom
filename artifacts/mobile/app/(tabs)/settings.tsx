@@ -23,6 +23,7 @@ import { SliderInput } from "@/components/SliderInput";
 import {
   getApiBase,
   getServerDomain,
+  hasDomain,
   saveServerDomain,
   resetServerDomain,
   fetchRenderDomain,
@@ -115,11 +116,25 @@ function ServerUrlSection() {
 
   return (
     <View style={su.wrap}>
+
+      {/* ── No-domain setup banner (shown when APK launched with no server URL) ── */}
+      {!hasDomain() && (
+        <View style={[su.noDomainBanner, { backgroundColor: "#EF444415", borderColor: "#EF444440" }]}>
+          <Feather name="alert-triangle" size={14} color="#EF4444" />
+          <View style={{ flex: 1 }}>
+            <Text style={[su.noDomainTitle, { color: "#EF4444" }]}>رابط السيرفر غير محدد</Text>
+            <Text style={[su.noDomainSub, { color: "#EF444499" }]}>
+              أدخل عنوان السيرفر أدناه واضغط «حفظ الرابط» لتفعيل البوت
+            </Text>
+          </View>
+        </View>
+      )}
+
       {/* ── Current URL display ── */}
       <View style={[su.currentBox, { backgroundColor: colors.muted, borderColor: colors.border }]}>
         <Feather name="server" size={13} color={colors.mutedForeground} />
         <Text style={[su.currentTxt, { color: colors.mutedForeground }]} numberOfLines={1}>
-          {getApiBase()}
+          {hasDomain() ? getApiBase() : "—"}
         </Text>
       </View>
 
@@ -209,7 +224,10 @@ function ServerUrlSection() {
 }
 
 const su = StyleSheet.create({
-  wrap:        { gap: 10 },
+  wrap:           { gap: 10 },
+  noDomainBanner: { flexDirection: "row", alignItems: "flex-start", gap: 10, padding: 12, borderRadius: 11, borderWidth: 1.5 },
+  noDomainTitle:  { fontSize: 13, fontWeight: "700" },
+  noDomainSub:    { fontSize: 11, marginTop: 2, lineHeight: 16 },
   currentBox:  { flexDirection: "row", alignItems: "center", gap: 8, padding: 10, borderRadius: 10, borderWidth: 1 },
   currentTxt:  { flex: 1, fontSize: 11, fontFamily: Platform.OS === "ios" ? "Courier New" : "monospace" },
   inputWrap:   { flexDirection: "row", alignItems: "center", borderRadius: 11, borderWidth: 1.5, paddingLeft: 10, paddingRight: 4 },
