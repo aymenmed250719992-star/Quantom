@@ -2685,6 +2685,268 @@ async def get_cluster_nodes():
         return {"this_node": nc.get_status(), "nodes": [], "error": str(e)}
 
 
+# ── Add external server node ───────────────────────────────────────────────────
+
+class AddNodeRequest(BaseModel):
+    url:   str
+    label: str = ""
+
+
+@router.post("/nodes/add")
+async def add_server_node(req: AddNodeRequest):
+    """Register an external server URL and ping it to measure latency."""
+    import time as _time
+    import uuid as _uuid
+
+    raw_url = req.url.strip().rstrip("/")
+    if not raw_url.startswith("http"):
+        raw_url = "https://" + raw_url
+
+    ping_url = f"{raw_url}/trade/ping"
+    latency_ms = 0
+    ping_ok    = False
+    ping_err   = ""
+
+    try:
+        t0 = _time.monotonic()
+        async with httpx.AsyncClient(timeout=10) as cx:
+            resp = await cx.get(ping_url)
+        latency_ms = round((_time.monotonic() - t0) * 1000)
+        ping_ok    = resp.status_code == 200
+        if not ping_ok:
+            ping_err = f"HTTP {resp.status_code}"
+    except Exception as e:
+        ping_err = str(e)[:120]
+
+    if not ping_ok:
+        return {
+            "success":    False,
+            "error":      f"لم يتم الوصول للسيرفر: {ping_err}",
+            "latency_ms": latency_ms,
+            "url":        raw_url,
+        }
+
+    # Register in DB
+    node_id = f"ext-{str(_uuid.uuid4())[:8]}"
+    label   = req.label.strip() or raw_url.split("//")[-1].split(".")[0]
+    try:
+        await db._exec_status("""
+            INSERT INTO server_nodes (node_id, hostname, is_leader, last_heartbeat, started_at, url, label, latency_ms)
+            VALUES ($1, $2, FALSE, NOW(), NOW(), $3, $4, $5)
+            ON CONFLICT (node_id) DO UPDATE
+            SET url=$3, label=$4, latency_ms=$5, last_heartbeat=NOW()
+        """, node_id, label, raw_url, label, latency_ms)
+    except Exception as e:
+        return {"success": False, "error": f"DB error: {e}", "latency_ms": latency_ms}
+
+    await manager.broadcast(json.dumps({
+        "type": "log",
+        "message": f"🖥️ Server added: {label} @ {raw_url} — {latency_ms}ms",
+    }))
+
+    return {
+        "success":    True,
+        "node_id":    node_id,
+        "label":      label,
+        "url":        raw_url,
+        "latency_ms": latency_ms,
+        "message":    f"✅ السيرفر متصل — زمن الاستجابة {latency_ms}ms",
+    }
+
+
+@router.delete("/nodes/{node_id}")
+async def remove_server_node(node_id: str):
+    """Remove a server node from the cluster."""
+    from node_coordinator import NodeCoordinator
+    nc = NodeCoordinator.get_instance()
+    if node_id == nc.node_id:
+        raise HTTPException(status_code=400, detail="Cannot remove the current leader node")
+    await db.remove_server_node(node_id)
+    return {"success": True, "removed": node_id}
+
+
+@router.post("/nodes/ping-all")
+async def ping_all_nodes():
+    """Ping all registered external servers and update their latency."""
+    import time as _time
+    nodes  = await db.get_all_nodes()
+    results = []
+    for n in nodes:
+        url = n.get("url", "")
+        if not url:
+            continue
+        ping_url   = f"{url.rstrip('/')}/trade/ping"
+        latency_ms = 9999
+        alive      = False
+        try:
+            t0 = _time.monotonic()
+            async with httpx.AsyncClient(timeout=6) as cx:
+                r = await cx.get(ping_url)
+            latency_ms = round((_time.monotonic() - t0) * 1000)
+            alive      = r.status_code == 200
+        except Exception:
+            pass
+        if url:
+            await db._exec_status(
+                "UPDATE server_nodes SET latency_ms=$1, last_heartbeat=NOW() WHERE node_id=$2",
+                latency_ms, n["node_id"]
+            )
+        results.append({
+            "node_id":    n["node_id"],
+            "label":      n.get("label", ""),
+            "url":        url,
+            "alive":      alive,
+            "latency_ms": latency_ms,
+        })
+    return {"pinged": len(results), "results": results}
+
+
+# ── Global Power Rating ────────────────────────────────────────────────────────
+
+@router.get("/power")
+async def get_global_power():
+    """Compute global power rating for the bot (0-100%)."""
+    from ai_agent import AIAgent
+    from node_coordinator import NodeCoordinator, LEADER_TIMEOUT
+    from datetime import datetime, timezone
+
+    breakdown: dict = {}
+
+    # ── AI Keys (max 30) ──────────────────────────────────────────────────────
+    ai_status = AIAgent.get_instance().pool_status()
+    total_keys = ai_status.get("total_keys", 0)
+    avail_keys = ai_status.get("available_keys", 0)
+    if total_keys == 0:
+        ai_score = 0
+    elif total_keys == 1:
+        ai_score = 12
+    elif total_keys == 2:
+        ai_score = 22
+    else:
+        ai_score = 30
+    if avail_keys == 0 and total_keys > 0:
+        ai_score = max(0, ai_score - 10)  # all exhausted penalty
+    breakdown["ai_keys"] = {
+        "score": ai_score, "max": 30,
+        "label": "مفاتيح AI",
+        "detail": f"{avail_keys}/{total_keys} نشط",
+    }
+
+    # ── Exchange mode (max 25) ────────────────────────────────────────────────
+    bot = await db.get_bot_status()
+    mode = bot.get("mode", "demo")
+    exchange_name = os.environ.get("EXCHANGE_NAME", "mexc")
+    has_creds = bool(os.environ.get("MEXC_API_KEY") or os.environ.get("BINANCE_API_KEY")
+                     or os.environ.get("BYBIT_API_KEY") or os.environ.get("KUCOIN_API_KEY"))
+    if mode == "live" and has_creds:
+        ex_score = 25
+    elif has_creds:
+        ex_score = 15
+    else:
+        ex_score = 5
+    breakdown["exchange"] = {
+        "score": ex_score, "max": 25,
+        "label": "اتصال البورصة",
+        "detail": f"{exchange_name.upper()} — {'LIVE 🔴' if mode == 'live' else 'DEMO 🔵'}",
+    }
+
+    # ── Server count (max 20) ─────────────────────────────────────────────────
+    try:
+        all_nodes = await db.get_all_nodes()
+        now = datetime.now(timezone.utc)
+        alive_nodes = []
+        for n in all_nodes:
+            hb_str = n.get("last_heartbeat", "")
+            try:
+                hb = datetime.fromisoformat(hb_str.replace("Z", "+00:00")) if hb_str else None
+                if hb:
+                    if hb.tzinfo is None:
+                        hb = hb.replace(tzinfo=timezone.utc)
+                    if (now - hb).total_seconds() < LEADER_TIMEOUT:
+                        alive_nodes.append(n)
+            except Exception:
+                pass
+        n_alive = len(alive_nodes)
+    except Exception:
+        n_alive = 1
+
+    if n_alive >= 3:
+        srv_score = 20
+    elif n_alive == 2:
+        srv_score = 13
+    elif n_alive == 1:
+        srv_score = 6
+    else:
+        srv_score = 0
+    breakdown["servers"] = {
+        "score": srv_score, "max": 20,
+        "label": "خوادم متصلة",
+        "detail": f"{n_alive} سيرفر {'نشط' if n_alive == 1 else 'نشطة'}",
+    }
+
+    # ── ML Model (max 15) ─────────────────────────────────────────────────────
+    try:
+        from ml_model import MLModel
+        ml = MLModel(db)
+        ml_trained = ml.is_trained()
+    except Exception:
+        ml_trained = False
+    ml_score = 15 if ml_trained else 0
+    breakdown["ml_model"] = {
+        "score": ml_score, "max": 15,
+        "label": "نموذج ML",
+        "detail": "مدرّب ✅" if ml_trained else "يحتاج 10+ صفقات",
+    }
+
+    # ── Memory (max 10) ───────────────────────────────────────────────────────
+    try:
+        mem_count = await db._exec_one("SELECT COUNT(*) AS c FROM agent_memory")
+        know_count = await db._exec_one("SELECT COUNT(*) AS c FROM bot_knowledge")
+        total_mem = (mem_count or {}).get("c", 0) + (know_count or {}).get("c", 0)
+        mem_score = min(10, int(total_mem / 2))
+    except Exception:
+        total_mem = 0
+        mem_score = 0
+    breakdown["memory"] = {
+        "score": mem_score, "max": 10,
+        "label": "ذاكرة مكتسبة",
+        "detail": f"{total_mem} دَرس/معرفة",
+    }
+
+    # ── Total ─────────────────────────────────────────────────────────────────
+    total_score = sum(v["score"] for v in breakdown.values())
+    total_max   = sum(v["max"]   for v in breakdown.values())
+    pct = round(total_score / total_max * 100) if total_max else 0
+
+    if pct >= 90:
+        grade, label_ar, global_rank = "S",  "عالمي",      "أفضل من 95% عالمياً"
+    elif pct >= 80:
+        grade, label_ar, global_rank = "A+", "احترافي",    "أفضل من 85% عالمياً"
+    elif pct >= 70:
+        grade, label_ar, global_rank = "A",  "متقدم",      "أفضل من 70% عالمياً"
+    elif pct >= 60:
+        grade, label_ar, global_rank = "B+", "جيد جداً",   "أفضل من 55% عالمياً"
+    elif pct >= 50:
+        grade, label_ar, global_rank = "B",  "جيد",        "أفضل من 40% عالمياً"
+    elif pct >= 35:
+        grade, label_ar, global_rank = "C",  "متوسط",      "أفضل من 25% عالمياً"
+    else:
+        grade, label_ar, global_rank = "D",  "يحتاج إعداد", "أقل من 25% عالمياً"
+
+    return {
+        "score":        pct,
+        "grade":        grade,
+        "label":        label_ar,
+        "global_rank":  global_rank,
+        "breakdown":    breakdown,
+        "tips": [
+            v["label"] + " — " + v["detail"]
+            for v in breakdown.values()
+            if v["score"] < v["max"]
+        ][:3],
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # ── TRADING COMPANY — Multi-Agent Endpoints ────────────────────────────────────
 # ═══════════════════════════════════════════════════════════════════════════════

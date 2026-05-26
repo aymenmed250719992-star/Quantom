@@ -1744,6 +1744,249 @@ const xc = StyleSheet.create({
   msg:       { fontSize: 11, textAlign: "center", marginTop: 2, lineHeight: 16 },
 });
 
+// ─── Server Pool Panel ───────────────────────────────────────────────────────
+
+function ServerPoolPanel() {
+  const colors  = useColors();
+  const [nodes,     setNodes]     = useState<any[]>([]);
+  const [loading,   setLoading]   = useState(false);
+  const [pinging,   setPinging]   = useState(false);
+  const [addUrl,    setAddUrl]    = useState("");
+  const [addLabel,  setAddLabel]  = useState("");
+  const [adding,    setAdding]    = useState(false);
+  const [msg,       setMsg]       = useState("");
+  const [power,     setPower]     = useState<any>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const base = getApiBase();
+      const [nr, pr] = await Promise.all([
+        fetch(`${base}/nodes`).then(r => r.json()),
+        fetch(`${base}/power`).then(r => r.json()),
+      ]);
+      setNodes(nr.nodes ?? []);
+      setPower(pr);
+    } catch { /* silent */ }
+  }, []);
+
+  useEffect(() => { setLoading(true); load().finally(() => setLoading(false)); }, [load]);
+
+  const handleAdd = async () => {
+    if (!addUrl.trim()) return;
+    setAdding(true); setMsg("");
+    try {
+      const base = getApiBase();
+      const res = await fetch(`${base}/nodes/add`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: addUrl.trim(), label: addLabel.trim() }),
+      }).then(r => r.json());
+      if (res.success) {
+        setMsg(`✅ ${res.message}`);
+        setAddUrl(""); setAddLabel("");
+        await load();
+      } else {
+        setMsg(`❌ ${res.error}`);
+      }
+    } catch (e: any) { setMsg(`❌ ${e.message}`); }
+    setAdding(false);
+  };
+
+  const handlePingAll = async () => {
+    setPinging(true); setMsg("");
+    try {
+      const base = getApiBase();
+      const res = await fetch(`${base}/nodes/ping-all`, { method: "POST" }).then(r => r.json());
+      setMsg(`✅ تم الـ ping على ${res.pinged} سيرفر`);
+      await load();
+    } catch (e: any) { setMsg(`❌ ${e.message}`); }
+    setPinging(false);
+  };
+
+  const handleRemove = async (nodeId: string) => {
+    try {
+      const base = getApiBase();
+      await fetch(`${base}/nodes/${encodeURIComponent(nodeId)}`, { method: "DELETE" });
+      await load();
+    } catch { /* silent */ }
+  };
+
+  const scoreColor = !power ? "#6B7280"
+    : power.score >= 70 ? "#10B981"
+    : power.score >= 50 ? "#F59E0B"
+    : "#EF4444";
+
+  return (
+    <View style={[s.section, { paddingHorizontal: 16 }]}>
+      {/* Section header */}
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 12 }}>
+        <View style={{ width: 3, height: 14, borderRadius: 2, backgroundColor: "#6366F1" }} />
+        <Text style={{ fontSize: 10, fontWeight: "700", letterSpacing: 1.5, color: colors.mutedForeground }}>
+          POWER & SERVER POOL
+        </Text>
+      </View>
+
+      {/* Global Power Card */}
+      {power && (
+        <View style={[s.card, { borderColor: `${scoreColor}44`, backgroundColor: colors.card, marginBottom: 12 }]}>
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+            <View style={{ gap: 2 }}>
+              <Text style={{ fontSize: 9, fontWeight: "700", letterSpacing: 1.5, color: colors.mutedForeground }}>
+                GLOBAL POWER RATING
+              </Text>
+              <Text style={{ fontSize: 22, fontWeight: "800", color: scoreColor }}>
+                {power.score}%
+                <Text style={{ fontSize: 14, fontWeight: "500", color: colors.mutedForeground }}> — {power.label}</Text>
+              </Text>
+              <Text style={{ fontSize: 11, color: colors.mutedForeground }}>{power.global_rank}</Text>
+            </View>
+            <View style={{
+              width: 52, height: 52, borderRadius: 26,
+              backgroundColor: `${scoreColor}18`,
+              borderWidth: 2, borderColor: `${scoreColor}44`,
+              alignItems: "center", justifyContent: "center",
+            }}>
+              <Text style={{ fontSize: 22, fontWeight: "800", color: scoreColor }}>{power.grade}</Text>
+            </View>
+          </View>
+
+          {/* Progress bar */}
+          <View style={{ height: 4, borderRadius: 2, backgroundColor: colors.muted, marginTop: 8 }}>
+            <View style={{ height: 4, borderRadius: 2, backgroundColor: scoreColor, width: `${power.score}%` as any }} />
+          </View>
+
+          {/* Breakdown */}
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
+            {Object.values(power.breakdown as Record<string, any>).map((b: any) => {
+              const ratio = b.score / b.max;
+              const c = ratio >= 0.8 ? "#10B981" : ratio >= 0.5 ? "#F59E0B" : "#EF4444";
+              return (
+                <View key={b.label} style={{
+                  paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8,
+                  backgroundColor: `${c}12`, borderWidth: 1, borderColor: `${c}33`,
+                  flexDirection: "row", alignItems: "center", gap: 4,
+                }}>
+                  <Text style={{ fontSize: 9, color: c, fontWeight: "700" }}>{b.score}/{b.max}</Text>
+                  <Text style={{ fontSize: 9, color: colors.mutedForeground }}>{b.label}</Text>
+                </View>
+              );
+            })}
+          </View>
+
+          {/* Tips */}
+          {(power.tips ?? []).length > 0 && (
+            <View style={{ marginTop: 8, padding: 8, borderRadius: 8, backgroundColor: `${scoreColor}08` }}>
+              <Text style={{ fontSize: 9, fontWeight: "700", color: scoreColor, marginBottom: 4 }}>لترقية الدرجة:</Text>
+              {(power.tips as string[]).map((tip, i) => (
+                <Text key={i} style={{ fontSize: 10, color: colors.mutedForeground, lineHeight: 16 }}>• {tip}</Text>
+              ))}
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* Server nodes list */}
+      <View style={[s.card, { borderColor: `#6366F144`, backgroundColor: colors.card }]}>
+        <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <Text style={{ fontSize: 13, fontWeight: "700", color: colors.foreground }}>🖥️ خوادم الكلستر</Text>
+          <Pressable
+            onPress={handlePingAll}
+            disabled={pinging}
+            style={{ paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, backgroundColor: "#6366F118", borderWidth: 1, borderColor: "#6366F144" }}
+          >
+            {pinging ? <ActivityIndicator size="small" color="#6366F1" /> : (
+              <Text style={{ fontSize: 11, color: "#6366F1", fontWeight: "600" }}>⚡ Ping الكل</Text>
+            )}
+          </Pressable>
+        </View>
+
+        {loading ? <ActivityIndicator color="#6366F1" /> : nodes.length === 0 ? (
+          <Text style={{ fontSize: 12, color: colors.mutedForeground, textAlign: "center", padding: 8 }}>
+            لا يوجد سيرفرات خارجية — السيرفر الحالي فقط يعمل
+          </Text>
+        ) : nodes.map((n: any) => {
+          const isLeader  = n.is_leader;
+          const latency   = n.latency_ms ?? 0;
+          const latColor  = latency <= 0 ? "#6B7280" : latency < 200 ? "#10B981" : latency < 600 ? "#F59E0B" : "#EF4444";
+          const age       = n.age_seconds ?? 9999;
+          const alive     = age < 75;
+          return (
+            <View key={n.node_id} style={{
+              flexDirection: "row", alignItems: "center", gap: 8,
+              paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.border,
+            }}>
+              <View style={{
+                width: 8, height: 8, borderRadius: 4,
+                backgroundColor: alive ? "#10B981" : "#EF4444",
+              }} />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 12, fontWeight: "600", color: colors.foreground }}>
+                  {n.label || n.hostname || n.node_id.slice(0, 12)}
+                  {isLeader && <Text style={{ color: "#F59E0B" }}> 👑</Text>}
+                </Text>
+                {n.url && <Text style={{ fontSize: 10, color: colors.mutedForeground }} numberOfLines={1}>{n.url}</Text>}
+              </View>
+              {latency > 0 && (
+                <Text style={{ fontSize: 10, fontWeight: "700", color: latColor }}>{latency}ms</Text>
+              )}
+              {!isLeader && (
+                <Pressable onPress={() => handleRemove(n.node_id)} hitSlop={8}>
+                  <Feather name="trash-2" size={14} color={`${colors.destructive}88`} />
+                </Pressable>
+              )}
+            </View>
+          );
+        })}
+
+        {/* Add server form */}
+        <View style={{ marginTop: 14, gap: 8 }}>
+          <Text style={{ fontSize: 11, fontWeight: "700", color: colors.mutedForeground }}>إضافة سيرفر خارجي</Text>
+          <TextInput
+            value={addUrl}
+            onChangeText={setAddUrl}
+            placeholder="https://my-bot.render.com"
+            placeholderTextColor={colors.mutedForeground}
+            style={[{ height: 40, borderRadius: 10, borderWidth: 1, paddingHorizontal: 12, fontSize: 13, color: colors.foreground, borderColor: colors.border, backgroundColor: colors.muted }]}
+            autoCapitalize="none"
+            keyboardType="url"
+          />
+          <TextInput
+            value={addLabel}
+            onChangeText={setAddLabel}
+            placeholder="اسم السيرفر (اختياري)"
+            placeholderTextColor={colors.mutedForeground}
+            style={[{ height: 38, borderRadius: 10, borderWidth: 1, paddingHorizontal: 12, fontSize: 13, color: colors.foreground, borderColor: colors.border, backgroundColor: colors.muted }]}
+          />
+          <Pressable
+            onPress={handleAdd}
+            disabled={adding || !addUrl.trim()}
+            style={{
+              height: 42, borderRadius: 10, alignItems: "center", justifyContent: "center",
+              backgroundColor: adding || !addUrl.trim() ? colors.muted : "#6366F1",
+              flexDirection: "row", gap: 8,
+            }}
+          >
+            {adding ? <ActivityIndicator size="small" color="#fff" /> : (
+              <>
+                <Feather name="plus-circle" size={15} color="#fff" />
+                <Text style={{ fontSize: 14, fontWeight: "700", color: "#fff" }}>اتصال وإضافة</Text>
+              </>
+            )}
+          </Pressable>
+          {!!msg && (
+            <Text style={{ fontSize: 12, color: msg.startsWith("✅") ? "#10B981" : "#EF4444", textAlign: "center" }}>
+              {msg}
+            </Text>
+          )}
+          <Text style={{ fontSize: 10, color: colors.mutedForeground, textAlign: "center", lineHeight: 16 }}>
+            يمكنك إضافة أي نسخة من السيرفر (Render / Railway / Fly.io) لتوزيع الحمل وزيادة السرعة
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
 // ─── Main Settings Screen ─────────────────────────────────────────────────────
 
 export default function SettingsScreen() {
@@ -2099,6 +2342,9 @@ export default function SettingsScreen() {
           </Text>
         </Pressable>
       </View>
+
+      {/* ══ Server Pool ══ */}
+      <ServerPoolPanel />
 
       {/* ══ Logout button ══ */}
       <View style={[s.section, { paddingHorizontal: 16, paddingBottom: 40 }]}>

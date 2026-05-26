@@ -398,6 +398,15 @@ class DatabaseClient:
                 started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """)
+        await self._exec_status(
+            "ALTER TABLE server_nodes ADD COLUMN IF NOT EXISTS url TEXT DEFAULT ''"
+        )
+        await self._exec_status(
+            "ALTER TABLE server_nodes ADD COLUMN IF NOT EXISTS label TEXT DEFAULT ''"
+        )
+        await self._exec_status(
+            "ALTER TABLE server_nodes ADD COLUMN IF NOT EXISTS latency_ms INTEGER DEFAULT 0"
+        )
 
         # ── trades: add account_id column (nullable — NULL = primary account) ─
         await self._exec_status(

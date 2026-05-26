@@ -479,6 +479,87 @@ const sc = StyleSheet.create({
   whaleTxt: { fontSize: 10 },
 });
 
+// ── Global Power Rating Card ──────────────────────────────────────────────────
+
+function GlobalPowerCard() {
+  const colors = useColors();
+  const [power, setPower] = useState<any>(null);
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const base = getApiBase();
+        const d = await fetch(`${base}/power`).then(r => r.json());
+        setPower(d);
+      } catch { /* silent */ }
+    };
+    load();
+    const t = setInterval(load, 120_000);
+    return () => clearInterval(t);
+  }, []);
+
+  if (!power) return null;
+
+  const pct = power.score as number;
+  const color = pct >= 70 ? "#10B981" : pct >= 50 ? "#F59E0B" : "#EF4444";
+
+  return (
+    <View style={[pw.card, { backgroundColor: colors.card, borderColor: `${color}44` }]}>
+      <View style={pw.row}>
+        <View style={{ flex: 1, gap: 2 }}>
+          <Text style={[pw.label, { color: colors.mutedForeground }]}>GLOBAL POWER</Text>
+          <View style={{ flexDirection: "row", alignItems: "baseline", gap: 6 }}>
+            <Text style={[pw.score, { color }]}>{pct}%</Text>
+            <Text style={[pw.grade, { color }]}>{power.grade}</Text>
+            <Text style={[pw.labelTxt, { color: colors.mutedForeground }]}>{power.label}</Text>
+          </View>
+          <Text style={[pw.rank, { color: colors.mutedForeground }]}>{power.global_rank}</Text>
+        </View>
+        <View style={[pw.ring, { borderColor: `${color}55`, backgroundColor: `${color}12` }]}>
+          <Text style={[pw.ringScore, { color }]}>{pct}</Text>
+          <Text style={[pw.ringPct, { color }]}>%</Text>
+        </View>
+      </View>
+
+      {/* Progress bar */}
+      <View style={[pw.track, { backgroundColor: colors.muted }]}>
+        <View style={[pw.fill, { width: `${pct}%` as any, backgroundColor: color }]} />
+      </View>
+
+      {/* Mini breakdown */}
+      <View style={pw.chips}>
+        {Object.values(power.breakdown as Record<string, any>).map((b: any) => {
+          const r = b.score / b.max;
+          const c = r >= 0.8 ? "#10B981" : r >= 0.4 ? "#F59E0B" : "#EF4444";
+          return (
+            <View key={b.label} style={[pw.chip, { backgroundColor: `${c}12`, borderColor: `${c}33` }]}>
+              <Text style={[pw.chipTxt, { color: c }]}>{b.label}: {b.score}/{b.max}</Text>
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+const pw = StyleSheet.create({
+  card:      { marginHorizontal: 16, marginTop: 10, borderRadius: 14, borderWidth: 1.5, padding: 14, gap: 8 },
+  row:       { flexDirection: "row" as const, alignItems: "center" as const, gap: 12 },
+  label:     { fontSize: 8, fontWeight: "700" as const, letterSpacing: 2 },
+  score:     { fontSize: 26, fontWeight: "800" as const, fontFamily: "monospace" },
+  grade:     { fontSize: 18, fontWeight: "800" as const },
+  labelTxt:  { fontSize: 11 },
+  rank:      { fontSize: 10, marginTop: 1 },
+  ring:      { width: 56, height: 56, borderRadius: 28, borderWidth: 2.5, alignItems: "center" as const, justifyContent: "center" as const },
+  ringScore: { fontSize: 16, fontWeight: "800" as const, lineHeight: 18 },
+  ringPct:   { fontSize: 9, fontWeight: "600" as const },
+  track:     { height: 4, borderRadius: 2 },
+  fill:      { height: 4, borderRadius: 2 },
+  chips:     { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 5 },
+  chip:      { paddingHorizontal: 7, paddingVertical: 3, borderRadius: 7, borderWidth: 1 },
+  chipTxt:   { fontSize: 9, fontWeight: "600" as const },
+});
+
 // ── Main screen ───────────────────────────────────────────────────────────────
 
 export default function DashboardScreen() {
@@ -733,6 +814,9 @@ export default function DashboardScreen() {
           ready={isReady}
         />
       )}
+
+      {/* ══════════════ GLOBAL POWER RATING ══════════════ */}
+      <GlobalPowerCard />
 
       {/* ══════════════ METRICS ROW ══════════════ */}
       <View style={styles.metricsRow}>
