@@ -78,8 +78,7 @@ externalPort = 3000
 [userenv]
 
 [userenv.shared]
-EXPO_TOKEN = "S-r15h0EmaHEJFojYqCpa1NcnOsSrfMN6NCMsKDv"
 
 [nix]
 channel = "stable-25_05"
-packages = ["glibcLocales", "libxcrypt", "postgresql", "eas-cli"]
+packages = ["eas-cli", "glibcLocales", "libxcrypt", "postgresql"]
