@@ -92,7 +92,7 @@ function ServerUrlSection() {
 
   const handleAutoDetect = async () => {
     setDetecting(true);
-    showMsg("⏳ أبحث عن رابط Render...");
+    showMsg("⏳ أبحث عن رابط السيرفر...");
     const domain = await fetchRenderDomain();
     if (domain) {
       setUrl(domain);
@@ -100,7 +100,7 @@ function ServerUrlSection() {
       showMsg(`✅ تم الكشف تلقائياً: ${domain}`);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } else {
-      showMsg("ℹ️ لم يُنشر على Render بعد — أدخل الرابط يدوياً");
+      showMsg("ℹ️ لم يُعثر على السيرفر تلقائياً — أدخل الرابط يدوياً");
     }
     setDetecting(false);
   };
@@ -1765,6 +1765,173 @@ const xc = StyleSheet.create({
   msg:       { fontSize: 11, textAlign: "center", marginTop: 2, lineHeight: 16 },
 });
 
+// ─── Database URL Panel ───────────────────────────────────────────────────────
+
+function DatabaseUrlPanel() {
+  const colors   = useColors();
+  const [url,     setUrl]     = useState("");
+  const [label,   setLabel]   = useState("");
+  const [testing, setTesting] = useState(false);
+  const [saving,  setSaving]  = useState(false);
+  const [msg,     setMsg]     = useState("");
+  const [dbInfo,  setDbInfo]  = useState<{ source?: string; connected?: boolean } | null>(null);
+
+  useEffect(() => {
+    fetch(`${getApiBase()}/db/status`)
+      .then(r => safeJson<{ source?: string; connected?: boolean }>(r))
+      .then(d => { if (d) setDbInfo(d); })
+      .catch(() => {});
+  }, []);
+
+  const showMsg = (m: string, ttl = 6000) => {
+    setMsg(m);
+    setTimeout(() => setMsg(""), ttl);
+  };
+
+  const handleTest = async () => {
+    if (!url.trim()) { showMsg("❌ أدخل رابط قاعدة البيانات أولاً"); return; }
+    setTesting(true); setMsg("⏳ جارٍ اختبار الاتصال...");
+    try {
+      const r = await fetch(`${getApiBase()}/db/test-url`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: url.trim() }),
+      });
+      const d = await safeJson<{ success?: boolean; source?: string; error?: string; message?: string }>(r);
+      if (!d) showMsg("❌ لا يمكن الوصول للسيرفر — تحقق من رابط الخادم");
+      else     showMsg(d.success ? `✅ ${d.message || "اتصال ناجح"}` : `❌ ${d.error}`);
+    } catch (e: any) { showMsg(`❌ ${e.message}`); }
+    setTesting(false);
+  };
+
+  const handleSave = async () => {
+    if (!url.trim()) { showMsg("❌ أدخل رابط قاعدة البيانات أولاً"); return; }
+    setSaving(true); setMsg("⏳ جارٍ الاتصال والحفظ...");
+    try {
+      const r = await fetch(`${getApiBase()}/db/update-url`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: url.trim(), label: label.trim() }),
+      });
+      const d = await safeJson<{ success?: boolean; source?: string; error?: string; message?: string }>(r);
+      if (!d) {
+        showMsg("❌ لا يمكن الوصول للسيرفر");
+      } else if (d.success) {
+        showMsg(`✅ ${d.message}`);
+        setDbInfo({ source: d.source, connected: true });
+        setUrl(""); setLabel("");
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } else {
+        showMsg(`❌ ${d.error}`);
+      }
+    } catch (e: any) { showMsg(`❌ ${e.message}`); }
+    setSaving(false);
+  };
+
+  const connected = dbInfo?.connected !== false;
+  const source    = dbInfo?.source ?? "Replit PostgreSQL";
+
+  return (
+    <View style={[s.card, { borderColor: colors.border, marginHorizontal: 16 }]}>
+      {/* Header */}
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 }}>
+        <View style={{ width: 3, height: 14, borderRadius: 2, backgroundColor: "#10B981" }} />
+        <Text style={{ fontSize: 10, fontWeight: "700", letterSpacing: 1.5, color: colors.mutedForeground }}>
+          قاعدة البيانات
+        </Text>
+      </View>
+
+      {/* Current connection */}
+      <View style={{
+        flexDirection: "row", alignItems: "center", gap: 8,
+        padding: 10, borderRadius: 10, marginBottom: 14,
+        backgroundColor: connected ? "#10B98110" : "#EF444410",
+        borderWidth: 1, borderColor: connected ? "#10B98130" : "#EF444430",
+      }}>
+        <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: connected ? "#10B981" : "#EF4444" }} />
+        <Text style={{ fontSize: 11, color: connected ? "#10B981" : "#EF4444", flex: 1 }}>
+          {connected ? `متصل — ${source}` : `غير متصل — ${source}`}
+        </Text>
+      </View>
+
+      {/* URL input */}
+      <Text style={{ fontSize: 11, color: colors.mutedForeground, marginBottom: 5 }}>رابط قاعدة البيانات</Text>
+      <View style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 10, backgroundColor: colors.muted, paddingHorizontal: 12, marginBottom: 8, minHeight: 42, justifyContent: "center" }}>
+        <TextInput
+          value={url}
+          onChangeText={setUrl}
+          placeholder="postgresql://user:pass@host/db?sslmode=require"
+          placeholderTextColor={colors.mutedForeground}
+          style={{ fontSize: 12, color: colors.foreground, fontFamily: Platform.OS === "ios" ? "Courier New" : "monospace" }}
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType="url"
+        />
+      </View>
+
+      {/* Label input */}
+      <View style={{ borderWidth: 1, borderColor: colors.border, borderRadius: 10, backgroundColor: colors.muted, paddingHorizontal: 12, marginBottom: 12, height: 40, justifyContent: "center" }}>
+        <TextInput
+          value={label}
+          onChangeText={setLabel}
+          placeholder="الاسم (اختياري — مثال: Neon Backup)"
+          placeholderTextColor={colors.mutedForeground}
+          style={{ fontSize: 13, color: colors.foreground }}
+        />
+      </View>
+
+      {/* Buttons */}
+      <View style={{ flexDirection: "row", gap: 8, marginBottom: 8 }}>
+        <Pressable
+          onPress={handleTest}
+          disabled={testing || saving}
+          style={{
+            flex: 1, height: 40, borderRadius: 10, borderWidth: 1,
+            borderColor: "#22C55E", alignItems: "center", justifyContent: "center",
+            flexDirection: "row", gap: 6, opacity: testing ? 0.6 : 1,
+          }}
+        >
+          {testing ? <ActivityIndicator size="small" color="#22C55E" /> : <Feather name="wifi" size={13} color="#22C55E" />}
+          <Text style={{ fontSize: 13, fontWeight: "700", color: "#22C55E" }}>اختبار</Text>
+        </Pressable>
+
+        <Pressable
+          onPress={handleSave}
+          disabled={saving || testing}
+          style={{
+            flex: 2, height: 40, borderRadius: 10,
+            backgroundColor: saving ? colors.muted : "#10B981",
+            alignItems: "center", justifyContent: "center",
+            flexDirection: "row", gap: 6, opacity: saving ? 0.6 : 1,
+          }}
+        >
+          {saving ? <ActivityIndicator size="small" color="#fff" /> : <Feather name="database" size={13} color="#fff" />}
+          <Text style={{ fontSize: 13, fontWeight: "700", color: "#fff" }}>
+            {saving ? "جارٍ الاتصال..." : "إضافة السيرفر"}
+          </Text>
+        </Pressable>
+      </View>
+
+      {!!msg && (
+        <Text style={{ fontSize: 11, textAlign: "center", lineHeight: 16,
+          color: msg.startsWith("✅") ? "#10B981" : msg.startsWith("⏳") ? colors.mutedForeground : "#EF4444",
+        }}>{msg}</Text>
+      )}
+
+      {/* Help guide */}
+      <View style={{ marginTop: 10, padding: 10, borderRadius: 10, backgroundColor: "#3B82F608", borderWidth: 1, borderColor: "#3B82F622" }}>
+        <Text style={{ fontSize: 9, fontWeight: "700", color: "#3B82F6", marginBottom: 4 }}>كيفية الحصول على الرابط:</Text>
+        <Text style={{ fontSize: 10, color: colors.mutedForeground, lineHeight: 16 }}>
+          {"• Neon.tech → New Project → Settings → Connection string → URI\n"}
+          {"• Supabase → Settings → Database → Connection string → URI\n"}
+          {"• Railway → Variables → DATABASE_URL\n"}
+          {"• الرابط يبدأ بـ postgresql:// أو postgres://"}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
 // ─── Server Pool Panel ───────────────────────────────────────────────────────
 
 function ServerPoolPanel() {
@@ -1782,11 +1949,11 @@ function ServerPoolPanel() {
     try {
       const base = getApiBase();
       const [nr, pr] = await Promise.all([
-        fetch(`${base}/nodes`).then(r => r.json()),
-        fetch(`${base}/power`).then(r => r.json()),
+        fetch(`${base}/nodes`).then(r => safeJson(r)),
+        fetch(`${base}/power`).then(r => safeJson(r)),
       ]);
-      setNodes(nr.nodes ?? []);
-      setPower(pr);
+      setNodes(nr?.nodes ?? []);
+      setPower(pr ?? null);
     } catch { /* silent */ }
   }, []);
 
@@ -1797,17 +1964,20 @@ function ServerPoolPanel() {
     setAdding(true); setMsg("");
     try {
       const base = getApiBase();
-      const res = await fetch(`${base}/nodes/add`, {
+      const r = await fetch(`${base}/nodes/add`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: addUrl.trim(), label: addLabel.trim() }),
-      }).then(r => r.json());
-      if (res.success) {
+      });
+      const res = await safeJson(r);
+      if (!res) {
+        setMsg("❌ لا يمكن الوصول للسيرفر — تحقق من الرابط");
+      } else if (res.success) {
         setMsg(`✅ ${res.message}`);
         setAddUrl(""); setAddLabel("");
         await load();
       } else {
-        setMsg(`❌ ${res.error}`);
+        setMsg(`❌ ${res.error || res.detail || "فشل الاتصال"}`);
       }
     } catch (e: any) { setMsg(`❌ ${e.message}`); }
     setAdding(false);
@@ -1817,8 +1987,10 @@ function ServerPoolPanel() {
     setPinging(true); setMsg("");
     try {
       const base = getApiBase();
-      const res = await fetch(`${base}/nodes/ping-all`, { method: "POST" }).then(r => r.json());
-      setMsg(`✅ تم الـ ping على ${res.pinged} سيرفر`);
+      const r = await fetch(`${base}/nodes/ping-all`, { method: "POST" });
+      const res = await safeJson(r);
+      if (res) setMsg(`✅ تم الـ ping على ${res.pinged} سيرفر`);
+      else setMsg("❌ لا يمكن الوصول للسيرفر");
       await load();
     } catch (e: any) { setMsg(`❌ ${e.message}`); }
     setPinging(false);
@@ -2108,7 +2280,7 @@ export default function SettingsScreen() {
       <View style={s.section}>
         <SectionHeader
           title="رابط الخادم"
-          subtitle="الصق رابط الـ Render backend هنا — مثال: my-bot.onrender.com"
+          subtitle="الصق رابط الـ backend هنا — مثال: my-bot.onrender.com أو رابط Replit"
         />
         <View style={[s.card, { borderColor: colors.border }]}>
           <ServerUrlSection />
@@ -2362,6 +2534,15 @@ export default function SettingsScreen() {
             {savedFlash ? "تم الحفظ ✓" : isSaving ? "جارٍ الحفظ..." : "حفظ وتطبيق"}
           </Text>
         </Pressable>
+      </View>
+
+      {/* ══ Database URL Section ══ */}
+      <View style={s.section}>
+        <SectionHeader
+          title="قاعدة البيانات"
+          subtitle="اربط قاعدة بيانات خارجية (Neon / Supabase / Railway) أو اترك الافتراضية"
+        />
+        <DatabaseUrlPanel />
       </View>
 
       {/* ══ Server Pool ══ */}

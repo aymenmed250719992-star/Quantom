@@ -160,6 +160,33 @@ class DatabaseClient:
             self._db_available = False
             return None
 
+    async def switch_url(self, new_url: str) -> None:
+        """Switch to a new database URL and reconnect the pool."""
+        import asyncpg
+        import ssl as _ssl
+
+        if self._pool is not None:
+            try:
+                await self._pool.close()
+            except Exception:
+                pass
+            self._pool = None
+
+        fixed = _fix_url(new_url)
+        self._db_url = fixed
+        self._db_available = True
+
+        ssl_ctx = _ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = _ssl.CERT_NONE
+
+        self._pool = await asyncpg.create_pool(
+            fixed,
+            min_size=1, max_size=5,
+            command_timeout=15, ssl=ssl_ctx,
+        )
+        print(f"[DB] Switched to new database URL — pool connected ✅")
+
     async def _exec(self, query: str, *args: Any) -> Optional[list]:
         """Execute a query and return rows as list of dicts."""
         pool = await self._get_pool()

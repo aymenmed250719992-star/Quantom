@@ -2948,6 +2948,134 @@ async def get_global_power():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# ── DATABASE MANAGEMENT Endpoints ──────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class DbUrlRequest(BaseModel):
+    url:   str
+    label: str = ""
+
+
+def _detect_db_source(url: str) -> str:
+    u = url.lower()
+    if "neon.tech" in u:              return "Neon"
+    if "supabase" in u:               return "Supabase"
+    if "cockroachdb" in u or "crdb" in u or "cockroach" in u: return "CockroachDB"
+    if "railway" in u:                return "Railway"
+    if "fly.io" in u or "fly.dev" in u: return "Fly.io"
+    if "render.com" in u:             return "Render"
+    if "localhost" in u or "127.0.0.1" in u: return "Local"
+    return "PostgreSQL"
+
+
+@router.get("/db/status")
+async def get_db_status():
+    """حالة اتصال قاعدة البيانات الحالية."""
+    pool = await db._get_pool()
+    connected = pool is not None
+    current_url = (
+        os.environ.get("QUANTOM_DB_URL", "")
+        or os.environ.get("SUPABASE_DB_URL", "")
+        or os.environ.get("DATABASE_URL", "")
+    )
+    source = _detect_db_source(current_url) if current_url else "Replit PostgreSQL"
+    return {
+        "connected": connected,
+        "source":    source,
+        "has_url":   bool(current_url),
+    }
+
+
+@router.post("/db/test-url")
+async def test_db_url(req: DbUrlRequest):
+    """اختبار رابط PostgreSQL دون حفظه."""
+    import asyncpg
+    import ssl as _ssl
+
+    raw = req.url.strip()
+    if not raw:
+        return {"success": False, "error": "الرابط فارغ"}
+    if raw.startswith("postgres://"):
+        raw = raw.replace("postgres://", "postgresql://", 1)
+
+    try:
+        ssl_ctx = _ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = _ssl.CERT_NONE
+        conn = await asyncpg.connect(raw, ssl=ssl_ctx, command_timeout=10)
+        await conn.execute("SELECT 1")
+        await conn.close()
+        source = _detect_db_source(raw)
+        return {"success": True, "source": source, "message": f"✅ اتصال ناجح — {source}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)[:300]}
+
+
+@router.post("/db/update-url")
+async def update_db_url(req: DbUrlRequest):
+    """اختبار وحفظ رابط قاعدة بيانات جديد والاتصال به فوراً."""
+    import asyncpg
+    import ssl as _ssl
+
+    raw = req.url.strip()
+    if not raw:
+        return {"success": False, "error": "الرابط فارغ"}
+    if raw.startswith("postgres://"):
+        raw = raw.replace("postgres://", "postgresql://", 1)
+
+    # ── Test first ───────────────────────────────────────────────────────────
+    try:
+        ssl_ctx = _ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = _ssl.CERT_NONE
+        conn = await asyncpg.connect(raw, ssl=ssl_ctx, command_timeout=10)
+        await conn.execute("SELECT 1")
+        await conn.close()
+    except Exception as e:
+        return {"success": False, "error": f"فشل الاتصال: {str(e)[:250]}"}
+
+    # ── Save to env (runtime + .env file) ────────────────────────────────────
+    os.environ["QUANTOM_DB_URL"] = raw
+    try:
+        env_path = os.path.join(os.path.dirname(__file__), ".env")
+        lines: list[str] = []
+        if os.path.exists(env_path):
+            with open(env_path, "r") as f:
+                lines = f.readlines()
+        found = False
+        for i, line in enumerate(lines):
+            if line.startswith("QUANTOM_DB_URL="):
+                lines[i] = f"QUANTOM_DB_URL={raw}\n"
+                found = True
+                break
+        if not found:
+            lines.append(f"QUANTOM_DB_URL={raw}\n")
+        with open(env_path, "w") as f:
+            f.writelines(lines)
+    except Exception as env_e:
+        print(f"[DB] Warning: could not write .env: {env_e}")
+
+    # ── Switch connection pool ────────────────────────────────────────────────
+    try:
+        await db.switch_url(raw)
+        await db.ensure_all_tables()
+    except Exception as sw_e:
+        return {"success": False, "error": f"حُفظ الرابط لكن فشل إعادة الاتصال: {sw_e}"}
+
+    source = _detect_db_source(raw)
+    label  = req.label.strip() or source
+    await manager.broadcast(json.dumps({
+        "type":    "log",
+        "message": f"🗄️ قاعدة البيانات تم تحديثها → {label}",
+    }))
+    return {
+        "success": True,
+        "source":  source,
+        "message": f"✅ متصل بـ {label} — البيانات تُحفظ هناك الآن",
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # ── TRADING COMPANY — Multi-Agent Endpoints ────────────────────────────────────
 # ═══════════════════════════════════════════════════════════════════════════════
 
