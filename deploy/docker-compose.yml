@@ -1,0 +1,33 @@
+services:
+  quantom-bot:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: quantom-bot
+    restart: always
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    volumes:
+      - quantom_ml:/app/ml_models
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/trade/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: quantom-tunnel
+    restart: always
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      quantom-bot:
+        condition: service_healthy
+
+volumes:
+  quantom_ml:

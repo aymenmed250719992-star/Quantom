@@ -128,10 +128,11 @@ async def lifespan(app: FastAPI):
 
     # ── Register current server domain in DB (for mobile reconnection) ──────
     try:
-        # Prefer Replit domain, fall back to Render external URL
+        # Priority: SERVER_DOMAIN (Cloudflare) > Replit > Render
+        cf_domain    = os.environ.get("SERVER_DOMAIN", "")
         replit_domain = os.environ.get("REPLIT_DEV_DOMAIN", "") or os.environ.get("REPLIT_DOMAINS", "")
         render_domain = os.environ.get("RENDER_EXTERNAL_URL", "")
-        raw_domain = replit_domain or render_domain
+        raw_domain = cf_domain or replit_domain or render_domain
         if raw_domain:
             clean = raw_domain.replace("https://", "").replace("http://", "").rstrip("/").split(",")[0].strip()
             await db.save_server_domain(clean)
@@ -184,14 +185,17 @@ async def lifespan(app: FastAPI):
     except Exception as _nc:
         print(f"[Startup] Node coordinator error: {_nc}")
 
-    # ── Self-pinger: keeps server awake (Replit + Render) ───────────────────
+    # ── Self-pinger: keeps server awake (Replit + Render + Cloudflare) ──────
     async def _keep_alive_loop():
         import httpx
-        # Always ping localhost internally — avoids SSL issues on Replit
+        # Always ping localhost internally — avoids SSL issues
         ping_url = "http://localhost:5000/trade/ping"
+        cf_url     = os.environ.get("SERVER_DOMAIN", "").rstrip("/")
         replit_url = os.environ.get("REPLIT_DEV_DOMAIN", "") or os.environ.get("REPLIT_DOMAINS", "")
         render_url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
-        if replit_url:
+        if cf_url:
+            display_url = f"https://{cf_url}/trade/ping"
+        elif replit_url:
             display_url = f"https://{replit_url.split(',')[0].strip().rstrip('/')}/trade/ping"
         elif render_url:
             display_url = f"{render_url}/trade/ping"
@@ -297,9 +301,10 @@ async def get_status():
 @router.get("/domain")
 async def get_domain():
     """Public endpoint — returns the current server domain for mobile auto-reconnect."""
+    cf_url     = os.environ.get("SERVER_DOMAIN", "")
     replit_url = os.environ.get("REPLIT_DEV_DOMAIN", "") or os.environ.get("REPLIT_DOMAINS", "")
     render_url = os.environ.get("RENDER_EXTERNAL_URL", "")
-    raw = replit_url or render_url
+    raw = cf_url or replit_url or render_url
     domain = raw.replace("https://", "").replace("http://", "").rstrip("/").split(",")[0].strip() if raw else ""
     return {"domain": domain, "ok": True}
 
