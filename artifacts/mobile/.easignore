@@ -25,3 +25,16 @@ __tests__/
 **/*.spec.*
 attached_assets/
 screenshots/
+
+# Exclude non-mobile workspace directories
+backend/
+artifacts/api-server/
+artifacts/mockup-sandbox/
+deploy/
+.agents/
+.local/
+.pythonlibs/
+__pycache__/
+*.pyc
+pnpm-lock.yaml
+pnpm-workspace.yaml
