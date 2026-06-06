@@ -1,0 +1,2 @@
+- [Supabase integration](supabase-integration.md) — Supabase runs alongside Neon DB; project ref fnixiuzcdfxkpsurgoju; all creds in backend/.env
+- [EAS build restriction](eas-build-restriction.md) — git init blocked in Replit main agent and /tmp; EAS cannot submit new builds from Replit; use existing APK or build locally

@@ -11,7 +11,9 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_DOMAIN": "c33eb94d-62bd-46ff-be0c-1ccf3b8866f2-00-159ybh6jq5ddx.kirk.replit.dev"
+        "EXPO_PUBLIC_DOMAIN": "c33eb94d-62bd-46ff-be0c-1ccf3b8866f2-00-159ybh6jq5ddx.kirk.replit.dev",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://fnixiuzcdfxkpsurgoju.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_RFyOyhsrd30CXRQYunJzAg_9rqmMgyt"
       }
     },
     "preview": {
@@ -21,7 +23,9 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_DOMAIN": "c33eb94d-62bd-46ff-be0c-1ccf3b8866f2-00-159ybh6jq5ddx.kirk.replit.dev"
+        "EXPO_PUBLIC_DOMAIN": "c33eb94d-62bd-46ff-be0c-1ccf3b8866f2-00-159ybh6jq5ddx.kirk.replit.dev",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://fnixiuzcdfxkpsurgoju.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_RFyOyhsrd30CXRQYunJzAg_9rqmMgyt"
       }
     },
     "production": {
@@ -31,7 +35,9 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_DOMAIN": "c33eb94d-62bd-46ff-be0c-1ccf3b8866f2-00-159ybh6jq5ddx.kirk.replit.dev"
+        "EXPO_PUBLIC_DOMAIN": "c33eb94d-62bd-46ff-be0c-1ccf3b8866f2-00-159ybh6jq5ddx.kirk.replit.dev",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://fnixiuzcdfxkpsurgoju.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_RFyOyhsrd30CXRQYunJzAg_9rqmMgyt"
       }
     }
   },

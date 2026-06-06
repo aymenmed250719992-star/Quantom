@@ -1932,7 +1932,112 @@ function DatabaseUrlPanel() {
   );
 }
 
-// ─── Server Pool Panel ───────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+//  Supabase Panel
+// ─────────────────────────────────────────────────────────────────────────────
+function SupabasePanel() {
+  const colors  = useColors();
+  const [status, setStatus]   = useState<"idle"|"loading"|"ok"|"err">("idle");
+  const [info,   setInfo]     = useState<any>(null);
+  const [msg,    setMsg]      = useState("");
+
+  const check = async () => {
+    setStatus("loading"); setMsg("");
+    try {
+      const res  = await fetch(`${getApiBase()}/supabase/status`, { signal: AbortSignal.timeout(8000) });
+      const data = await res.json();
+      setInfo(data);
+      setStatus(data.connected ? "ok" : "err");
+      setMsg(data.connected ? "✅ Supabase متصل" : "⚠️ غير متصل — تحقق من الـ keys");
+    } catch (e: any) {
+      setStatus("err");
+      setMsg(`❌ خطأ: ${e.message}`);
+    }
+  };
+
+  const checkTables = async () => {
+    setStatus("loading"); setMsg("جارٍ جلب الجداول...");
+    try {
+      const res  = await fetch(`${getApiBase()}/supabase/tables`, { signal: AbortSignal.timeout(10000) });
+      const data = await res.json();
+      if (data.ok) setMsg(`📋 الجداول: ${data.tables?.join(", ") || "لا يوجد جداول بعد"}`);
+      else setMsg(`⚠️ ${data.error}`);
+      setStatus("ok");
+    } catch (e: any) {
+      setStatus("err"); setMsg(`❌ ${e.message}`);
+    }
+  };
+
+  return (
+    <View style={[s.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+      {/* Status row */}
+      <View style={[s.row, { marginBottom: 10 }]}>
+        <View style={s.rowLeft}>
+          <View style={[s.rowIcon, { backgroundColor: "#3ECF8E18" }]}>
+            <Feather name="database" size={17} color="#3ECF8E" />
+          </View>
+          <View>
+            <Text style={[s.rowLabel, { color: colors.foreground }]}>Supabase</Text>
+            <Text style={[s.rowDesc,  { color: colors.mutedForeground }]}>
+              {info?.url ?? "fnixiuzcdfxkpsurgoju.supabase.co"}
+            </Text>
+          </View>
+        </View>
+        <View style={{
+          paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8,
+          backgroundColor: status === "ok" ? "#3ECF8E22" : status === "err" ? "#EF444422" : colors.muted,
+        }}>
+          <Text style={{ fontSize: 11, fontWeight: "700",
+            color: status === "ok" ? "#3ECF8E" : status === "err" ? "#EF4444" : colors.mutedForeground,
+          }}>
+            {status === "loading" ? "..." : status === "ok" ? "متصل" : status === "err" ? "خطأ" : "غير محدد"}
+          </Text>
+        </View>
+      </View>
+
+      {/* Info rows */}
+      {[
+        { label: "المشروع", value: "Quantom" },
+        { label: "الـ URL", value: "https://fnixiuzcdfxkpsurgoju.supabase.co" },
+        { label: "الوضع", value: "يعمل بجانب Neon DB" },
+      ].map(({ label, value }) => (
+        <View key={label} style={{ flexDirection: "row", paddingVertical: 3, gap: 8 }}>
+          <Text style={{ fontSize: 11, color: colors.mutedForeground, width: 70 }}>{label}</Text>
+          <Text style={{ fontSize: 11, color: colors.foreground, flex: 1 }} numberOfLines={1}>{value}</Text>
+        </View>
+      ))}
+
+      {msg ? (
+        <Text style={{ fontSize: 12, color: status === "ok" ? "#3ECF8E" : status === "err" ? "#EF4444" : colors.mutedForeground, marginTop: 8, lineHeight: 18 }}>
+          {msg}
+        </Text>
+      ) : null}
+
+      {/* Buttons */}
+      <View style={{ flexDirection: "row", gap: 8, marginTop: 14 }}>
+        <Pressable
+          onPress={check}
+          disabled={status === "loading"}
+          style={{ flex: 1, height: 38, borderRadius: 10, alignItems: "center", justifyContent: "center",
+            backgroundColor: "#3ECF8E22", borderWidth: 1, borderColor: "#3ECF8E44" }}
+        >
+          {status === "loading"
+            ? <ActivityIndicator size="small" color="#3ECF8E" />
+            : <Text style={{ fontSize: 13, fontWeight: "700", color: "#3ECF8E" }}>اختبار الاتصال</Text>
+          }
+        </Pressable>
+        <Pressable
+          onPress={checkTables}
+          disabled={status === "loading"}
+          style={{ flex: 1, height: 38, borderRadius: 10, alignItems: "center", justifyContent: "center",
+            backgroundColor: colors.muted, borderWidth: 1, borderColor: colors.border }}
+        >
+          <Text style={{ fontSize: 13, fontWeight: "600", color: colors.mutedForeground }}>عرض الجداول</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
 
 function ServerPoolPanel() {
   const colors  = useColors();
@@ -2547,6 +2652,15 @@ export default function SettingsScreen() {
 
       {/* ══ Server Pool ══ */}
       <ServerPoolPanel />
+
+      {/* ══ Supabase Section ══ */}
+      <View style={s.section}>
+        <SectionHeader
+          title="SUPABASE"
+          subtitle="قاعدة بيانات ثانية — يستخدمها البوت للتخزين والذاكرة الموسّعة"
+        />
+        <SupabasePanel />
+      </View>
 
       {/* ══ Logout button ══ */}
       <View style={[s.section, { paddingHorizontal: 16, paddingBottom: 40 }]}>

@@ -82,6 +82,8 @@ externalPort = 3002
 [userenv]
 
 [userenv.shared]
+SUPABASE_URL = "https://fnixiuzcdfxkpsurgoju.supabase.co"
+SUPABASE_PROJECT_REF = "fnixiuzcdfxkpsurgoju"
 
 [nix]
 channel = "stable-25_05"

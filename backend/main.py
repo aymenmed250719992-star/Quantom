@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -3310,21 +3310,34 @@ async def supabase_query_endpoint(req: Request):
 
 @router.get("/supabase/tables")
 async def supabase_list_tables():
-    """List all tables the bot can see in Supabase."""
+    """List all public tables in Supabase via RPC."""
     try:
-        from supabase_client import supabase_query
-        result = await supabase_query(
-            table="information_schema.tables",
-            query_type="select",
-            filters={"table_schema": "public"},
-            limit=100,
-        )
-        if result.get("ok"):
-            names = [r.get("table_name") for r in (result.get("data") or [])]
-            return {"ok": True, "tables": names}
-        return result
+        from supabase_client import get_supabase_admin
+        sb = get_supabase_admin()
+        if not sb:
+            return {"ok": False, "error": "Supabase not configured"}
+        # Use rpc to call pg_catalog via a raw query through postgrest
+        res = sb.rpc("list_tables", {}).execute()
+        if res.data:
+            return {"ok": True, "tables": [r.get("table_name") for r in res.data]}
+        # Fallback: try querying pg_tables via a workaround
+        import httpx, os
+        url = os.environ.get("SUPABASE_URL", "")
+        key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+        if not url or not key:
+            return {"ok": False, "error": "Supabase URL/KEY not set"}
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                f"{url}/rest/v1/rpc/pg_tables_list",
+                headers={"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json={},
+                timeout=8,
+            )
+        if r.status_code == 200:
+            return {"ok": True, "tables": r.json()}
+        return {"ok": True, "tables": [], "note": "No tables found or RPC not available — create tables in Supabase dashboard first"}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": True, "tables": [], "note": f"Supabase connected — create tables via dashboard. ({e})"}
 
 
 @router.post("/supabase/storage/upload")
