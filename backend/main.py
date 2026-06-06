@@ -3267,6 +3267,115 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 
+# ─────────────────────────────────────────────
+#  SUPABASE — full freedom endpoints for the bot
+# ─────────────────────────────────────────────
+
+@router.get("/supabase/status")
+async def supabase_status():
+    try:
+        from supabase_client import is_configured, SUPABASE_URL, get_supabase_admin
+        configured = is_configured()
+        connected = False
+        if configured:
+            sb = get_supabase_admin()
+            connected = sb is not None
+        return {
+            "ok": True,
+            "configured": configured,
+            "connected": connected,
+            "url": SUPABASE_URL if configured else None,
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.post("/supabase/query")
+async def supabase_query_endpoint(req: Request):
+    """Generic query — bot can SELECT/INSERT/UPDATE/DELETE any table freely."""
+    try:
+        body = await req.json()
+        from supabase_client import supabase_query
+        result = await supabase_query(
+            table=body.get("table", ""),
+            query_type=body.get("type", "select"),
+            filters=body.get("filters"),
+            data=body.get("data"),
+            limit=body.get("limit", 100),
+        )
+        return result
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.get("/supabase/tables")
+async def supabase_list_tables():
+    """List all tables the bot can see in Supabase."""
+    try:
+        from supabase_client import supabase_query
+        result = await supabase_query(
+            table="information_schema.tables",
+            query_type="select",
+            filters={"table_schema": "public"},
+            limit=100,
+        )
+        if result.get("ok"):
+            names = [r.get("table_name") for r in (result.get("data") or [])]
+            return {"ok": True, "tables": names}
+        return result
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.post("/supabase/storage/upload")
+async def supabase_upload(req: Request):
+    """Upload a file to Supabase Storage."""
+    try:
+        body = await req.json()
+        from supabase_client import supabase_storage_upload
+        import base64
+        content_b64 = body.get("content_base64", "")
+        content = base64.b64decode(content_b64) if content_b64 else b""
+        result = await supabase_storage_upload(
+            bucket=body.get("bucket", "quantom"),
+            path=body.get("path", "file"),
+            content=content,
+            content_type=body.get("content_type", "application/octet-stream"),
+        )
+        return result
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.get("/supabase/storage/{bucket}")
+async def supabase_list_storage(bucket: str, folder: str = ""):
+    """List files in a Supabase Storage bucket."""
+    try:
+        from supabase_client import supabase_storage_list
+        return await supabase_storage_list(bucket, folder)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.post("/supabase/configure")
+async def supabase_configure(req: Request):
+    """Set SUPABASE_URL at runtime (no restart needed)."""
+    try:
+        body = await req.json()
+        url = body.get("url", "").strip().rstrip("/")
+        if not url.startswith("https://"):
+            return {"ok": False, "error": "URL must start with https://"}
+        import supabase_client as sc
+        sc.SUPABASE_URL = url
+        sc._client = None
+        sc._admin_client = None
+        os.environ["SUPABASE_URL"] = url
+        sb = sc.get_supabase_admin() or sc.get_supabase()
+        return {"ok": sb is not None, "url": url, "connected": sb is not None}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 app.include_router(router)
 
 
