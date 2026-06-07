@@ -22,6 +22,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ── New world-class modules (imported lazily inside methods for safety) ────────
+# price_feed, genetic_optimizer, confluence_engine, onchain_intel,
+# portfolio_correlation, ensemble_ai, kelly_criterion, audit_trail
+
 
 class TradingScheduler:
     def __init__(self, db: Any) -> None:
@@ -99,17 +103,148 @@ class TradingScheduler:
             coalesce=True,
         )
 
+        # ── On-chain intel refresh (every 15 min) ────────────────────────────
+        try:
+            self.scheduler.remove_job("onchain_refresh")
+        except Exception:
+            pass
+        self.scheduler.add_job(
+            self._refresh_onchain_intel,
+            "interval",
+            minutes=15,
+            id="onchain_refresh",
+            next_run_time=datetime.now(),
+            max_instances=1,
+            coalesce=True,
+        )
+
+        # ── Genetic optimizer (every 24 h) ───────────────────────────────────
+        try:
+            self.scheduler.remove_job("genetic_optimizer")
+        except Exception:
+            pass
+        self.scheduler.add_job(
+            self._run_genetic_optimizer,
+            "interval",
+            hours=24,
+            id="genetic_optimizer",
+            max_instances=1,
+            coalesce=True,
+        )
+
+        # ── Correlation matrix refresh (every 60 min) ────────────────────────
+        try:
+            self.scheduler.remove_job("correlation_refresh")
+        except Exception:
+            pass
+        self.scheduler.add_job(
+            self._refresh_correlation,
+            "interval",
+            minutes=60,
+            id="correlation_refresh",
+            next_run_time=datetime.now(),
+            max_instances=1,
+            coalesce=True,
+        )
+
+        # ── Price feed start ─────────────────────────────────────────────────
+        asyncio.create_task(self._start_price_feed())
+
+        # ── Audit trail init ─────────────────────────────────────────────────
+        try:
+            from audit_trail import AuditTrail
+            AuditTrail.get_instance().init(self.db)
+        except Exception as _at:
+            print(f"[AuditTrail] init error: {_at}")
+
         self._running = True
 
     def stop(self) -> None:
         if not self._running:
             return
-        for job_id in ("market_scan", "gemini_news_poll", "crowd_refresh"):
+        for job_id in ("market_scan", "gemini_news_poll", "crowd_refresh",
+                       "onchain_refresh", "genetic_optimizer", "correlation_refresh"):
             try:
                 self.scheduler.remove_job(job_id)
             except Exception:
                 pass
         self._running = False
+
+    # ── Price Feed ────────────────────────────────────────────────────────────
+
+    async def _start_price_feed(self) -> None:
+        """Start WebSocket/polling real-time price feed."""
+        await asyncio.sleep(5)   # wait for exchange client to be ready
+        try:
+            from price_feed import PriceFeed
+            from bybit_client import ExchangeClient
+            symbols_env = os.environ.get("TRADING_SYMBOLS", "BTC/USDT,ETH/USDT,SOL/USDT")
+            syms = [s.strip() for s in symbols_env.split(",") if s.strip()]
+            feed = PriceFeed.get_instance()
+            await feed.start(syms)
+            print(f"[PriceFeed] ▶ Started for {syms}")
+        except Exception as e:
+            print(f"[PriceFeed] Start error: {e}")
+
+    # ── On-chain intel refresh ────────────────────────────────────────────────
+
+    async def _refresh_onchain_intel(self) -> None:
+        """Fetch Fear&Greed, BTC dominance, trending coins every 15 min."""
+        try:
+            from onchain_intel import get_intel
+            symbols_env = os.environ.get("TRADING_SYMBOLS", "BTC/USDT,ETH/USDT")
+            syms = [s.strip() for s in symbols_env.split(",") if s.strip()]
+            intel = await get_intel(syms)
+            summary = intel.get("summary", "")
+            regime  = intel.get("market_regime", "neutral")
+            print(f"[OnChain] {summary}")
+            await self._broadcast(json.dumps({
+                "type": "log",
+                "message": f"🌐 On-Chain: {summary}",
+            }))
+        except Exception as e:
+            print(f"[OnChain] Refresh error: {e}")
+
+    # ── Genetic optimizer ─────────────────────────────────────────────────────
+
+    async def _run_genetic_optimizer(self) -> None:
+        """Run genetic evolution on closed trades every 24h."""
+        try:
+            from genetic_optimizer import GeneticOptimizer
+            opt = GeneticOptimizer.get_instance()
+            if not opt.should_run():
+                return
+            all_trades = await self.db.get_trades(limit=500)
+            closed = [t for t in all_trades if t.get("status") == "closed"]
+            best = await opt.maybe_evolve(closed)
+            if best:
+                await self._broadcast(json.dumps({
+                    "type": "log",
+                    "message": (
+                        f"🧬 Genetic Optimizer: gen {best.generation} | "
+                        f"fitness={best.fitness:.3f} | "
+                        f"conf≥{best.min_confidence:.0f} SL={best.sl_pct:.1f}% TP={best.tp_pct:.1f}%"
+                    ),
+                }))
+        except Exception as e:
+            print(f"[GA] Optimizer error: {e}")
+
+    # ── Correlation refresh ───────────────────────────────────────────────────
+
+    async def _refresh_correlation(self) -> None:
+        """Refresh portfolio correlation matrix every 60 min."""
+        try:
+            from portfolio_correlation import PortfolioCorrelation
+            from bybit_client import ExchangeClient
+            symbols_env = os.environ.get("TRADING_SYMBOLS", "BTC/USDT,ETH/USDT,SOL/USDT,XRP/USDT")
+            syms   = [s.strip() for s in symbols_env.split(",") if s.strip()]
+            client = ExchangeClient.get_instance()
+            pc     = PortfolioCorrelation.get_instance()
+            await pc.refresh(syms, client)
+            status = pc.status()
+            print(f"[Correlation] Matrix refreshed — {status['pairs_tracked']} pairs")
+        except Exception as e:
+            print(f"[Correlation] Refresh error: {e}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Gemini Periodic News Polling
@@ -313,24 +448,24 @@ class TradingScheduler:
                         ),
                     }))
 
-                    # ── Push Notification: trade close ────────────────────────
+                    # ── Audit Trail: log trade close ──────────────────────────
+                    try:
+                        from audit_trail import AuditTrail
+                        open_ts  = trade.get("created_at")
+                        dur_min  = 0.0
+                        if open_ts:
+                            import time as _time
+                            dur_min = (_time.time() - (float(open_ts) if isinstance(open_ts, (int, float)) else 0)) / 60
+                        AuditTrail.get_instance().log_trade_close(trade, pnl, dur_min)
+                    except Exception as _atc:
+                        print(f"[Audit] Trade close log error: {_atc}")
+
+                    # ── Smart Push Notification: trade close ──────────────────
                     try:
                         from push_manager import PushManager
                         _push = PushManager.get_instance()
                         if _push.token_count > 0:
-                            sym_short = symbol.replace("/USDT", "")
-                            if hit_tp:
-                                await _push.send(
-                                    f"✅ ربح — {sym_short}",
-                                    f"PnL: ${pnl:+.4f} USDT | السعر: ${current_price:.4f}",
-                                    {"type": "trade_close", "result": "win", "symbol": symbol},
-                                )
-                            else:
-                                await _push.send(
-                                    f"🔴 Stop Loss — {sym_short}",
-                                    f"PnL: ${pnl:+.4f} USDT | السعر: ${current_price:.4f}",
-                                    {"type": "trade_close", "result": "loss", "symbol": symbol},
-                                )
+                            await _push.notify_trade_close(trade, pnl, current_price)
                     except Exception as _pe:
                         print(f"[Push] trade-close error: {_pe}")
                     # ─────────────────────────────────────────────────────────
@@ -384,11 +519,8 @@ class TradingScheduler:
                 from push_manager import PushManager
                 _push = PushManager.get_instance()
                 if _push.token_count > 0:
-                    await _push.send(
-                        "🛑 إيقاف طارئ!",
-                        "5 خسائر متتالية — البوت موقف مؤقتاً للمراجعة العميقة",
-                        {"type": "emergency"},
-                    )
+                    cons_l = perception.get("consecutive_losses", 5)
+                    await _push.notify_emergency(cons_l)
             except Exception as _pe:
                 print(f"[Push] emergency error: {_pe}")
 
@@ -409,11 +541,8 @@ class TradingScheduler:
                 from push_manager import PushManager
                 _push = PushManager.get_instance()
                 if _push.token_count > 0:
-                    await _push.send(
-                        "⚠️ تنبيه انخفاض",
-                        "3 خسائر متتالية — تم رفع عتبة الثقة تلقائياً",
-                        {"type": "drawdown"},
-                    )
+                    cons_l = perception.get("consecutive_losses", 3)
+                    await _push.notify_drawdown(cons_l)
             except Exception as _pe:
                 print(f"[Push] drawdown error: {_pe}")
 
@@ -431,11 +560,8 @@ class TradingScheduler:
                 from push_manager import PushManager
                 _push = PushManager.get_instance()
                 if _push.token_count > 0:
-                    await _push.send(
-                        "🏆 سلسلة فوز رائعة!",
-                        "5 صفقات رابحة متتالية — استراتيجيتك تعمل بشكل ممتاز",
-                        {"type": "win_streak"},
-                    )
+                    cons_w = perception.get("consecutive_wins", 5)
+                    await _push.notify_win_streak(cons_w)
             except Exception as _pe:
                 print(f"[Push] win-streak error: {_pe}")
 
@@ -708,6 +834,33 @@ class TradingScheduler:
                 await asyncio.sleep(8)
                 raw_decision = await gemini.analyze_market(symbol, ohlcv, indicators, lessons)
 
+                # ── Ensemble AI Voting (5 voters) ──────────────────────────
+                ensemble_result = None
+                try:
+                    from ensemble_ai import ensemble_vote
+                    ensemble_result = await ensemble_vote(symbol, indicators, raw_decision, client)
+                    e_action = ensemble_result.action
+                    e_conf   = ensemble_result.confidence
+                    e_agree  = ensemble_result.agreement
+                    print(f"[Ensemble] {symbol}: {e_action} {e_conf:.0f}% ({e_agree}/5 agree)")
+                    await self._broadcast(json.dumps({
+                        "type": "log",
+                        "message": (
+                            f"🗳️ Ensemble {symbol}: {e_action} {e_conf:.0f}% "
+                            f"| agreement {e_agree}/5 "
+                            f"| score={ensemble_result.weighted_score:.2f}"
+                        ),
+                    }))
+                    # Override raw_decision with ensemble consensus
+                    raw_decision = {
+                        **raw_decision,
+                        "action":     e_action,
+                        "confidence": e_conf,
+                        "reasoning":  f"[Ensemble {e_agree}/5] " + raw_decision.get("reasoning", ""),
+                    }
+                except Exception as _ev:
+                    print(f"[Ensemble] Error: {_ev}")
+
                 # ── Agent layer ────────────────────────────────────────────
                 decision    = await agent.enhance_decision(symbol, raw_decision, indicators, perception)
                 action      = decision.get("action", "HOLD")
@@ -715,6 +868,46 @@ class TradingScheduler:
                 reasoning   = decision.get("reasoning", "")
                 pattern     = decision.get("pattern", "")
                 agent_notes = decision.get("agent_notes", "")
+
+                # ── Multi-Timeframe Confluence ──────────────────────────────
+                confluence_result = None
+                if action in ("BUY", "SELL"):
+                    try:
+                        from confluence_engine import analyze_confluence
+                        confluence_result = await analyze_confluence(symbol, client, min_agreement=2)
+                        cf_action = confluence_result.get("action", "HOLD")
+                        cf_agree  = confluence_result.get("agreement", 0)
+                        cf_score  = confluence_result.get("confluence_score", 0)
+                        await self._broadcast(json.dumps({
+                            "type": "log",
+                            "message": (
+                                f"📡 Confluence {symbol}: {cf_action} "
+                                f"| {cf_agree}/4 TF agree "
+                                f"| {confluence_result.get('reason','')[:60]}"
+                            ),
+                        }))
+                        # If confluence strongly disagrees, reduce confidence
+                        if cf_action != action and cf_score >= 3:
+                            confidence = max(0, confidence - 15)
+                            reasoning += f" [Confluence penalty: {cf_action}]"
+                        elif cf_action == action and cf_agree >= 3:
+                            confidence = min(99, confidence + 5)
+                            reasoning += f" [Confluence bonus: {cf_agree}/4 TF]"
+                    except Exception as _cf:
+                        print(f"[Confluence] Error: {_cf}")
+
+                # ── Audit Trail: log signal decision ───────────────────────
+                try:
+                    from audit_trail import AuditTrail
+                    AuditTrail.get_instance().log_signal(
+                        symbol=symbol, action=action, decided_by="ensemble" if ensemble_result else "gemini",
+                        confidence=confidence, indicators=indicators, reason=reasoning,
+                        ai_votes=ensemble_result.to_dict() if ensemble_result else {},
+                        confluence=confluence_result or {},
+                        kelly_pct=0.0, mode=client.mode, strategy=agent.memory._current_strategy,
+                    )
+                except Exception as _ata:
+                    print(f"[Audit] Signal log error: {_ata}")
 
                 sig_msg = (
                     f"📡 {symbol}: {action} ({confidence}%)"
@@ -838,6 +1031,11 @@ class TradingScheduler:
 
                 # ── Skip if emergency halted ───────────────────────────────
                 if emergency_halted:
+                    try:
+                        from audit_trail import AuditTrail
+                        AuditTrail.get_instance().log_block(symbol, "emergency halt active", "agent")
+                    except Exception:
+                        pass
                     await self._broadcast(json.dumps({
                         "type": "log",
                         "message": f"🛑 {symbol}: BUY blocked — emergency halt active",
@@ -845,6 +1043,32 @@ class TradingScheduler:
                     continue
 
                 side = "buy"
+
+                # ── Portfolio Correlation Guard ─────────────────────────────
+                try:
+                    from portfolio_correlation import PortfolioCorrelation
+                    pc = PortfolioCorrelation.get_instance()
+                    corr_result = pc.check_new_trade(symbol, list(_open_symbols))
+                    if not corr_result["allowed"]:
+                        await self._broadcast(json.dumps({
+                            "type": "log",
+                            "message": f"🔗 {symbol}: {corr_result['reason']}",
+                        }))
+                        try:
+                            from audit_trail import AuditTrail
+                            AuditTrail.get_instance().log_block(symbol, corr_result["reason"], "correlation")
+                        except Exception:
+                            pass
+                        continue
+                    size_factor = corr_result.get("size_factor", 1.0)
+                    if size_factor < 1.0:
+                        await self._broadcast(json.dumps({
+                            "type": "log",
+                            "message": f"⚠️ {symbol}: {corr_result['reason']}",
+                        }))
+                except Exception as _ce:
+                    print(f"[Correlation] Guard error: {_ce}")
+                    size_factor = 1.0
 
                 # ── ML prediction ──────────────────────────────────────────
                 from ml_model import TradingMLModel
@@ -869,7 +1093,31 @@ class TradingScheduler:
 
                 stop_loss_pct    = float(decision.get("stop_loss_percent",    1.5))
                 take_profit_pct  = float(decision.get("take_profit_percent",  3.0))
-                quantity         = risk_manager.calculate_position_size(total_balance, current_price, stop_loss_pct)
+
+                # ── Kelly Criterion — Dynamic Position Sizing ───────────────
+                kelly_result: dict = {}
+                try:
+                    from kelly_criterion import KellyPositionSizer
+                    _all_trades_for_kelly = await self.db.get_trades(limit=300)
+                    _closed_for_kelly = [t for t in _all_trades_for_kelly if t.get("status") == "closed"]
+                    kelly_sizer   = KellyPositionSizer(_closed_for_kelly)
+                    quantity, kelly_result = kelly_sizer.position_size(
+                        symbol, total_balance, current_price, stop_loss_pct, pattern,
+                    )
+                    quantity *= size_factor   # apply correlation size reduction if any
+                    print(f"[Kelly] {symbol}: risk={kelly_result.get('risk_pct',1.5):.2f}% qty={quantity:.6f} | {kelly_result.get('reason','')}")
+                    await self._broadcast(json.dumps({
+                        "type": "log",
+                        "message": (
+                            f"📐 Kelly {symbol}: risk={kelly_result.get('risk_pct',1.5):.2f}% "
+                            f"({kelly_result.get('source','default')}) "
+                            f"qty={quantity:.6f}"
+                        ),
+                    }))
+                except Exception as _ke:
+                    print(f"[Kelly] Error: {_ke}")
+                    quantity = risk_manager.calculate_position_size(total_balance, current_price, stop_loss_pct)
+                    quantity *= size_factor
 
                 if quantity <= 0:
                     continue
@@ -949,19 +1197,27 @@ class TradingScheduler:
                     "trade": trade,
                 }))
 
-                # ── Push Notification: new trade opened ───────────────────
+                # ── Audit Trail: log trade open ────────────────────────────
+                try:
+                    from audit_trail import AuditTrail
+                    AuditTrail.get_instance().log_trade_open(
+                        trade, decided_by="ensemble" if ensemble_result else "gemini",
+                        kelly_pct=kelly_result.get("risk_pct", 1.5),
+                        balance_at=total_balance, exchange=client.exchange_name,
+                        strategy=agent.memory._current_strategy,
+                        indicators=indicators,
+                        ai_votes=ensemble_result.to_dict() if ensemble_result else {},
+                        confluence=confluence_result or {},
+                    )
+                except Exception as _ata:
+                    print(f"[Audit] Trade open log error: {_ata}")
+
+                # ── Smart Push Notification: new trade opened ─────────────
                 try:
                     from push_manager import PushManager
                     _push = PushManager.get_instance()
                     if _push.token_count > 0:
-                        sym_short = symbol.replace("/USDT", "")
-                        conf_pct  = int(round(confidence * 100)) if confidence <= 1 else int(confidence)
-                        mode_tag  = "ورقي" if order.get("demo") else "حقيقي"
-                        await _push.send(
-                            f"📊 إشارة شراء — {sym_short}",
-                            f"ثقة: {conf_pct}% | SL: ${stop_price:.4f} | TP: ${tp_price:.4f} [{mode_tag}]",
-                            {"type": "trade_open", "symbol": symbol, "confidence": conf_pct},
-                        )
+                        await _push.notify_trade_open(trade, indicators, kelly_result)
                 except Exception as _pe:
                     print(f"[Push] trade-open error: {_pe}")
                 # ─────────────────────────────────────────────────────────

@@ -3389,6 +3389,243 @@ async def supabase_configure(req: Request):
         return {"ok": False, "error": str(e)}
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# ── World-Class Features Endpoints (T001–T010) ────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+# T001 — WebSocket Price Feed Status
+@router.get("/feed/status")
+async def price_feed_status():
+    """Real-time price feed status and current cached prices."""
+    try:
+        from price_feed import PriceFeed
+        return {"ok": True, **PriceFeed.get_instance().status()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# T002 — Genetic Optimizer Status
+@router.get("/optimizer/status")
+async def genetic_optimizer_status():
+    """Genetic Algorithm optimizer status and best genome."""
+    try:
+        from genetic_optimizer import GeneticOptimizer
+        return {"ok": True, **GeneticOptimizer.get_instance().status()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.post("/optimizer/run")
+async def genetic_optimizer_run():
+    """Trigger genetic optimizer manually (runs in background)."""
+    try:
+        from genetic_optimizer import GeneticOptimizer
+        trades = await db.get_trades(limit=500)
+        closed = [t for t in trades if t.get("status") == "closed"]
+        opt    = GeneticOptimizer.get_instance()
+        if opt._running:
+            return {"ok": False, "note": "Optimizer already running"}
+        asyncio.create_task(opt.maybe_evolve(closed))
+        return {"ok": True, "message": "Genetic optimizer started in background", "trades_available": len(closed)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# T003 — Multi-TF Confluence
+@router.get("/confluence/{symbol:path}")
+async def confluence_analysis(symbol: str, min_agreement: int = 2):
+    """Multi-timeframe confluence analysis for a symbol."""
+    try:
+        from confluence_engine import analyze_confluence
+        from bybit_client import ExchangeClient
+        sym = symbol.replace("-", "/").upper()
+        result = await analyze_confluence(sym, ExchangeClient.get_instance(), min_agreement=min_agreement)
+        return {"ok": True, "symbol": sym, **result}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# T004 — On-Chain Intelligence
+@router.get("/onchain")
+async def onchain_intel(symbols: str = "BTC/USDT,ETH/USDT"):
+    """On-chain intelligence: Fear&Greed, BTC dominance, trending, market regime."""
+    try:
+        from onchain_intel import get_intel
+        syms   = [s.strip() for s in symbols.split(",") if s.strip()]
+        result = await get_intel(syms)
+        return {"ok": True, **result}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# T005 — Portfolio Correlation Matrix
+@router.get("/correlation/heatmap")
+async def correlation_heatmap():
+    """Portfolio correlation heat map data."""
+    try:
+        from portfolio_correlation import PortfolioCorrelation
+        pc = PortfolioCorrelation.get_instance()
+        return {"ok": True, **pc.heat_map(), "status": pc.status()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.get("/correlation/check/{symbol:path}")
+async def correlation_check(symbol: str):
+    """Check if opening a new trade for symbol is safe given current open positions."""
+    try:
+        from portfolio_correlation import PortfolioCorrelation
+        sym    = symbol.replace("-", "/").upper()
+        trades = await db.get_trades(limit=200)
+        open_syms = [t["symbol"] for t in trades if t.get("status") == "open"]
+        result = PortfolioCorrelation.get_instance().check_new_trade(sym, open_syms)
+        return {"ok": True, "symbol": sym, **result}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# T006 — Ensemble AI Voting (demo)
+class EnsembleRequest(BaseModel):
+    symbol: str
+    indicators: dict = {}
+    gemini_decision: dict = {}
+
+
+@router.post("/ensemble/vote")
+async def ensemble_vote_demo(req: EnsembleRequest):
+    """Run ensemble AI voting demo without placing a real trade."""
+    try:
+        from ensemble_ai import ensemble_vote
+        from bybit_client import ExchangeClient
+        result = await ensemble_vote(
+            req.symbol, req.indicators, req.gemini_decision, ExchangeClient.get_instance()
+        )
+        return {"ok": True, "symbol": req.symbol, **result.to_dict()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# T007 — Advanced Backtester + Monte Carlo
+class BacktestRequest(BaseModel):
+    symbol: str
+    timeframe: str = "1h"
+    candles: int = 500
+    initial_capital: float = 1000.0
+    sl_pct: float = 1.5
+    tp_pct: float = 3.0
+    rsi_buy_max: float = 40.0
+    rsi_sell_min: float = 60.0
+
+
+@router.post("/backtest")
+async def run_backtest(req: BacktestRequest):
+    """
+    Run walk-forward backtest + Monte Carlo simulation.
+    Returns Sharpe, Sortino, MaxDD, Win Rate, Profit Factor, VaR 95%.
+    """
+    try:
+        from backtester_advanced import run_backtest
+        from bybit_client import ExchangeClient
+        params = {
+            "sl_pct":       req.sl_pct,
+            "tp_pct":       req.tp_pct,
+            "rsi_buy_max":  req.rsi_buy_max,
+            "rsi_sell_min": req.rsi_sell_min,
+        }
+        result = await run_backtest(
+            symbol=req.symbol.replace("-", "/").upper(),
+            client=ExchangeClient.get_instance(),
+            params=params,
+            initial_capital=req.initial_capital,
+            timeframe=req.timeframe,
+            candles=req.candles,
+        )
+        return {"ok": True, **result}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.get("/backtest/genome")
+async def backtest_with_best_genome(symbol: str = "BTC/USDT", candles: int = 300):
+    """Run backtest using the best evolved genome parameters."""
+    try:
+        from backtester_advanced import run_backtest
+        from genetic_optimizer import GeneticOptimizer
+        from bybit_client import ExchangeClient
+        genome = GeneticOptimizer.get_instance().get_best_genome()
+        params = {
+            "sl_pct":       genome.sl_pct,
+            "tp_pct":       genome.tp_pct,
+            "rsi_buy_max":  genome.rsi_buy_max,
+            "rsi_sell_min": genome.rsi_sell_min,
+        }
+        result = await run_backtest(
+            symbol=symbol.replace("-", "/").upper(),
+            client=ExchangeClient.get_instance(),
+            params=params,
+            candles=candles,
+        )
+        return {"ok": True, "genome": genome.to_dict(), **result}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# T009 — Kelly Criterion Position Sizing
+@router.get("/kelly/{symbol:path}")
+async def kelly_sizing(symbol: str, balance: float = 1000.0, entry_price: float = 0.0, sl_pct: float = 1.5):
+    """Compute Kelly Criterion optimal position size for a symbol."""
+    try:
+        from kelly_criterion import KellyPositionSizer, compute_kelly_from_trades
+        sym    = symbol.replace("-", "/").upper()
+        trades = await db.get_trades(limit=300)
+        closed = [t for t in trades if t.get("status") == "closed"]
+        kr     = compute_kelly_from_trades(closed, symbol=sym)
+        result: dict = {"kelly_analysis": kr}
+        if balance > 0 and entry_price > 0 and sl_pct > 0:
+            sizer = KellyPositionSizer(closed)
+            qty, kr2 = sizer.position_size(sym, balance, entry_price, sl_pct)
+            result["quantity"] = qty
+            result["position_sizing"] = kr2
+        return {"ok": True, "symbol": sym, **result}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# T010 — Audit Trail & Trade Journal
+@router.get("/audit/recent")
+async def audit_recent(limit: int = 50, event_type: Optional[str] = None):
+    """Get recent audit trail entries."""
+    try:
+        from audit_trail import AuditTrail
+        entries = await AuditTrail.get_instance().get_recent(limit=limit, event_type=event_type)
+        return {"ok": True, "entries": entries, "count": len(entries)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.get("/audit/weekly")
+async def audit_weekly_summary():
+    """Generate weekly performance report from audit trail."""
+    try:
+        from audit_trail import AuditTrail
+        summary = await AuditTrail.get_instance().get_weekly_summary()
+        return {"ok": True, **summary}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.get("/audit/table/ensure")
+async def audit_ensure_table():
+    """Create audit_log table if it doesn't exist (idempotent)."""
+    try:
+        from audit_trail import AuditTrail
+        await AuditTrail.get_instance().ensure_table()
+        return {"ok": True, "message": "audit_log table ready"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 app.include_router(router)
 
 
