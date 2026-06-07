@@ -9,9 +9,9 @@ function cleanDomain(raw: string | undefined): string {
   return (raw ?? "").replace(/^https?:\/\//, "").replace(/\/+$/, "").trim();
 }
 
-const D1 = cleanDomain(process.env.EXPO_PUBLIC_DOMAIN);   // Render
-const D2 = cleanDomain(process.env.EXPO_PUBLIC_DOMAIN_2); // Railway
-const D3 = cleanDomain(process.env.EXPO_PUBLIC_DOMAIN_3); // Fly.io
+const D1 = cleanDomain(process.env.EXPO_PUBLIC_DOMAIN   ?? "mstuv23-quantom-v2.hf.space"); // HuggingFace
+const D2 = cleanDomain(process.env.EXPO_PUBLIC_DOMAIN_2 ?? ""); // Railway (future)
+const D3 = cleanDomain(process.env.EXPO_PUBLIC_DOMAIN_3 ?? ""); // Fly.io (future)
 
 // All 3 baked-in candidates (non-empty only)
 export const CANDIDATE_DOMAINS: string[] = [D1, D2, D3].filter((d) => d.length > 4);
