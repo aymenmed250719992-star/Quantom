@@ -1,11 +1,12 @@
 services:
   - type: web
-    name: quantom-trading-bot
+    name: quantom-v2
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerContext: ./backend
     plan: free
     region: oregon
+    healthCheckPath: /trade/health
     envVars:
       - key: EXCHANGE_NAME
         value: mexc
@@ -30,4 +31,12 @@ services:
       - key: SCAN_INTERVAL_MINUTES
         value: "5"
       - key: QUANTOM_DB_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
         sync: false

@@ -1,0 +1,34 @@
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1"
+healthcheckPath = "/trade/health"
+healthcheckTimeout = 30
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 5
+
+[[deploy.environmentVariables]]
+name = "EXCHANGE_NAME"
+value = "mexc"
+
+[[deploy.environmentVariables]]
+name = "EXCHANGE_MODE"
+value = "demo"
+
+[[deploy.environmentVariables]]
+name = "_USE_SSL_RENDER"
+value = "True"
+
+[[deploy.environmentVariables]]
+name = "MIN_CONFIDENCE_SCORE"
+value = "55"
+
+[[deploy.environmentVariables]]
+name = "MAX_RISK_PERCENT"
+value = "1.5"
+
+[[deploy.environmentVariables]]
+name = "SCAN_INTERVAL_MINUTES"
+value = "5"

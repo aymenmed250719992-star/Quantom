@@ -3,15 +3,22 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 export const SERVER_URL_KEY = "quantom_server_domain_v1";
 export const AUTO_DISCOVER_KEY = "quantom_auto_discovered_v1";
 
-const BAKED_DOMAIN = (process.env.EXPO_PUBLIC_DOMAIN ?? "")
-  .replace(/^https?:\/\//, "")
-  .replace(/\/+$/, "");
+// ── Baked-in production URLs (set via EXPO_PUBLIC_DOMAIN_x at build time) ──
+// Priority: 1=Render  2=Railway  3=Fly.io
+function cleanDomain(raw: string | undefined): string {
+  return (raw ?? "").replace(/^https?:\/\//, "").replace(/\/+$/, "").trim();
+}
 
-const CANDIDATE_DOMAINS: string[] = [
-  BAKED_DOMAIN,
-].filter((d) => d.length > 4);
+const D1 = cleanDomain(process.env.EXPO_PUBLIC_DOMAIN);   // Render
+const D2 = cleanDomain(process.env.EXPO_PUBLIC_DOMAIN_2); // Railway
+const D3 = cleanDomain(process.env.EXPO_PUBLIC_DOMAIN_3); // Fly.io
+
+// All 3 baked-in candidates (non-empty only)
+export const CANDIDATE_DOMAINS: string[] = [D1, D2, D3].filter((d) => d.length > 4);
 
 let _domain: string = CANDIDATE_DOMAINS[0] ?? "";
+
+// ── Core helpers ─────────────────────────────────────────────────────────────
 
 export function getApiBase(): string {
   const p = _domain.startsWith("localhost") ? "http" : "https";
@@ -59,6 +66,8 @@ export function hasDomain(): boolean {
   return _domain.length > 4;
 }
 
+// ── Ping helper ───────────────────────────────────────────────────────────────
+
 async function pingDomain(domain: string, timeoutMs = 5000): Promise<boolean> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -76,12 +85,15 @@ async function pingDomain(domain: string, timeoutMs = 5000): Promise<boolean> {
   }
 }
 
+// ── Auto-discover: tries all 3 platforms in parallel, picks fastest alive ────
+
 export async function autoDiscoverServer(force = false): Promise<string | null> {
+  // 1. Try last-known working domain first (unless forced)
   if (!force) {
     try {
       const cached = await AsyncStorage.getItem(AUTO_DISCOVER_KEY);
       if (cached && cached.length > 3) {
-        const ok = await pingDomain(cached, 5000);
+        const ok = await pingDomain(cached, 4000);
         if (ok) {
           _domain = cached;
           await AsyncStorage.setItem(SERVER_URL_KEY, cached).catch(() => {});
@@ -91,11 +103,13 @@ export async function autoDiscoverServer(force = false): Promise<string | null> 
     } catch {}
   }
 
+  // 2. Race all 3 baked-in production domains simultaneously
   const candidates = [...new Set(CANDIDATE_DOMAINS)].filter(Boolean);
+  if (candidates.length === 0) return null;
 
   const results = await Promise.allSettled(
     candidates.map(async (domain) => {
-      const ok = await pingDomain(domain, 5000);
+      const ok = await pingDomain(domain, 6000);
       if (!ok) throw new Error("unreachable");
       return domain;
     })
@@ -114,16 +128,16 @@ export async function autoDiscoverServer(force = false): Promise<string | null> 
   return null;
 }
 
-export const DEFAULT_SERVER_DOMAIN = CANDIDATE_DOMAINS[0] ?? "";
+// ── Fetch the saved Render domain from the currently-connected server ─────────
 
-/**
- * Asks the currently-connected server for its saved Render/production domain.
- * Useful after deploying to Render: connect to old server → auto-fetch new URL.
- */
 export async function fetchRenderDomain(): Promise<string | null> {
   try {
     const res = await fetch(`${getApiBase()}/domain`, {
-      signal: (() => { const c = new AbortController(); setTimeout(() => c.abort(), 6000); return c.signal; })(),
+      signal: (() => {
+        const c = new AbortController();
+        setTimeout(() => c.abort(), 6000);
+        return c.signal;
+      })(),
     });
     const d = await safeJson<{ domain?: string; ok?: boolean }>(res);
     if (d?.domain && d.domain.length > 4) return d.domain;
@@ -133,7 +147,6 @@ export async function fetchRenderDomain(): Promise<string | null> {
   }
 }
 
-/** Safe JSON parser — returns null if response is HTML/empty instead of throwing */
 export async function safeJson<T = any>(res: Response): Promise<T | null> {
   try {
     const ct = res.headers.get("content-type") ?? "";
@@ -143,3 +156,5 @@ export async function safeJson<T = any>(res: Response): Promise<T | null> {
     return null;
   }
 }
+
+export const DEFAULT_SERVER_DOMAIN = CANDIDATE_DOMAINS[0] ?? "";
