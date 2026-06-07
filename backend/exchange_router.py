@@ -75,14 +75,48 @@ class ExchangeRouter:
         return bool(key and secret)
 
     def _score(self, name: str) -> float:
+        """
+        Score = weighted sum of 4 factors:
+          40% — success rate        (trade execution reliability)
+          25% — latency             (speed of order placement)
+          20% — consecutive health  (recent stability — penalises failure streaks)
+          15% — volume tier         (MEXC > Binance > Bybit > KuCoin on shared IPs)
+
+        IP_BLOCKED exchanges are halved so MEXC wins by default on Replit.
+        """
         st = self._stats[name]
+
+        # Success rate (0-1)
+        success = st["success_rate"] / 100.0
+
+        # Latency score (1 = instant, 0 = ≥ 5 s)
         lat_score = max(0.0, 1.0 - st["latency_ms"] / 5000.0)
-        base = 0.7 * (st["success_rate"] / 100.0) + 0.3 * lat_score
-        # Penalise exchanges that may be blocked on shared hosting IPs
-        # so MEXC always wins unless it has catastrophic failure rate
+
+        # Consecutive health: penalise recent failure streaks exponentially
+        cf = st["consecutive_fails"]
+        health = max(0.0, 1.0 - (cf ** 1.5) / 20.0)   # 0 fails → 1.0 | 4 fails → 0.6 | 8 fails → 0.0
+
+        # Volume tier — known liquidity ranking (static heuristic)
+        _VOLUME_TIER: dict[str, float] = {
+            "binance": 1.00,   # highest global volume
+            "bybit":   0.85,
+            "mexc":    0.75,
+            "kucoin":  0.65,
+        }
+        vol_tier = _VOLUME_TIER.get(name, 0.5)
+
+        base = (
+            0.40 * success
+            + 0.25 * lat_score
+            + 0.20 * health
+            + 0.15 * vol_tier
+        )
+
+        # Penalise IP-blocked exchanges on shared hosting (Replit)
         if name in IP_BLOCKED:
             base *= 0.5
-        return base
+
+        return round(base, 4)
 
     def _pick_initial(self) -> str:
         preferred = os.environ.get("EXCHANGE_NAME", "mexc").lower()

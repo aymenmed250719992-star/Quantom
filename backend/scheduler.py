@@ -235,6 +235,52 @@ class TradingScheduler:
                 if current_price <= 0:
                     continue
 
+                # ── Trailing Stop-Loss (حماية الأرباح تلقائياً) ──────────────
+                if entry > 0 and sl > 0:
+                    move_pct = (current_price - entry) / entry * 100 if side == "buy" else (entry - current_price) / entry * 100
+                    new_sl: Optional[float] = None
+
+                    if side == "buy":
+                        if move_pct >= 10.0:
+                            candidate = round(entry * 1.07, 6)   # lock in 7%
+                            if candidate > sl:
+                                new_sl = candidate
+                        elif move_pct >= 5.0:
+                            candidate = round(entry * 1.03, 6)   # lock in 3%
+                            if candidate > sl:
+                                new_sl = candidate
+                        elif move_pct >= 2.0:
+                            candidate = round(entry * 1.005, 6)  # break-even + 0.5%
+                            if candidate > sl:
+                                new_sl = candidate
+                    else:  # sell
+                        if move_pct >= 10.0:
+                            candidate = round(entry * 0.93, 6)
+                            if candidate < sl:
+                                new_sl = candidate
+                        elif move_pct >= 5.0:
+                            candidate = round(entry * 0.97, 6)
+                            if candidate < sl:
+                                new_sl = candidate
+                        elif move_pct >= 2.0:
+                            candidate = round(entry * 0.995, 6)
+                            if candidate < sl:
+                                new_sl = candidate
+
+                    if new_sl is not None:
+                        old_sl = sl
+                        sl = new_sl
+                        await self.db.update_trade(tid, {"stop_loss_price": new_sl})
+                        await self._broadcast(json.dumps({
+                            "type": "log",
+                            "message": (
+                                f"🔒 Trailing SL — {symbol} | "
+                                f"SL: ${old_sl:.4f} → ${new_sl:.4f} | "
+                                f"حركة: +{move_pct:.1f}%"
+                            ),
+                        }))
+                # ─────────────────────────────────────────────────────────────
+
                 hit_sl = hit_tp = False
                 if side == "buy":
                     if sl > 0 and current_price <= sl:
@@ -404,13 +450,13 @@ class TradingScheduler:
             await ll.strategic_review(broadcast_fn=self._broadcast_fn)
             agent.reset_deep_review_counter()
 
-        # ── 6. ML retraining ───────────────────────────────────────────────
+        # ── 6. ML retraining (non-blocking — runs in background thread) ───────
         try:
             from ml_model import TradingMLModel
             ml = TradingMLModel.get_instance()
             if ml.should_retrain():
                 closed_for_ml = await self.db.get_closed_trades_for_ml()
-                trained = ml.train(closed_for_ml)
+                trained = await ml.async_train(closed_for_ml)   # ← non-blocking
                 if trained:
                     top = ml.feature_importances[0] if ml.feature_importances else ("?", 0)
                     await self._broadcast(json.dumps({
@@ -534,6 +580,24 @@ class TradingScheduler:
 
         # ── THINK + PLAN ──────────────────────────────────────────────────
         symbols      = await self._select_symbols(client, max_symbols=6)
+
+        # ── Shariah Filter (فلتر الامتثال الإسلامي) ───────────────────────
+        try:
+            from shariah_auditor import ShariahAuditor
+            auditor  = ShariahAuditor.get_instance()
+            halal    = auditor.filter_halal(symbols, allow_caution=True)
+            rejected = [s for s in symbols if s not in halal]
+            if rejected:
+                print(f"[Shariah] ❌ رموز مرفوضة: {rejected}")
+                await self._broadcast(json.dumps({
+                    "type": "log",
+                    "message": f"🕌 Shariah Auditor: رُفض {', '.join(rejected)} | تبقّى: {', '.join(halal)}",
+                }))
+            symbols = halal if halal else symbols   # fallback if all rejected
+        except Exception as _sa:
+            print(f"[Shariah] Auditor error: {_sa}")
+        # ──────────────────────────────────────────────────────────────────
+
         market_data  = {s: {} for s in symbols}
         plan         = await agent.think(perception, market_data)
 
@@ -579,19 +643,28 @@ class TradingScheduler:
         except Exception:
             _open_symbols = set()
 
-        # ── 3. Scan each symbol for signals ───────────────────────────────
+        # ── 3. Scan each symbol for signals (with indicator cache) ────────
+        from indicator_cache import IndicatorCache
+        ind_cache = IndicatorCache.get_instance()
+
         for symbol in symbols:
             try:
-                ohlcv = await client.get_ohlcv(symbol, "15m", 100)
+                ohlcv = await ind_cache.get_ohlcv(
+                    symbol, "15m", 100,
+                    fetch_fn=client.get_ohlcv,
+                )
                 if not ohlcv or len(ohlcv) < 30:
                     await self._broadcast(json.dumps({
                         "type": "log",
-                        "message": f"⚠️ {symbol}: insufficient OHLCV ({len(ohlcv)} candles)",
+                        "message": f"⚠️ {symbol}: insufficient OHLCV ({len(ohlcv) if ohlcv else 0} candles)",
                     }))
                     continue
 
-                indicators = get_market_indicators(ohlcv)
-                if "error" in indicators:
+                indicators = await ind_cache.get_indicators(
+                    symbol, "15m", 100, ohlcv,
+                    compute_fn=get_market_indicators,
+                )
+                if not indicators or "error" in indicators:
                     continue
 
                 current_price = indicators.get("current_price", 0)

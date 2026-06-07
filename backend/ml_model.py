@@ -120,6 +120,16 @@ class TradingMLModel:
             float(trade.get("entry_hour_utc") or 12),
         ]
 
+    # ── Async Training (non-blocking) ────────────────────────────────────────
+
+    async def async_train(self, closed_trades: list[dict]) -> bool:
+        """
+        Train in a background thread so the async event loop stays free.
+        Identical result to train() but never blocks the server.
+        """
+        import asyncio
+        return await asyncio.to_thread(self.train, closed_trades)
+
     # ── Training ─────────────────────────────────────────────────────────────
 
     def train(self, closed_trades: list[dict]) -> bool:

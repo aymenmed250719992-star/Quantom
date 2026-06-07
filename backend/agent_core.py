@@ -62,25 +62,33 @@ class AgentMemory:
     # ── Persistence: never forget ─────────────────────────────────────────────
 
     def _save_state(self) -> None:
-        """Persist critical state to disk so restarts don't wipe memory."""
-        try:
-            state = {
-                "pattern_scores":       self._pattern_scores,
-                "current_strategy":     self._current_strategy,
-                "strategy_confidence":  self._strategy_confidence,
-                "goal":                 self._goal,
-                "strategy_overrides":   self._strategy_overrides,
-                "consecutive_losses":   self._consecutive_losses,
-                "consecutive_wins":     self._consecutive_wins,
-                "emergency_halted":     self._emergency_halted,
-                "session_thoughts":     self._session_thoughts[-50:],
-                "session_plans":        self._session_plans[-20:],
-                "saved_at":             time.time(),
-            }
-            with open(AGENT_STATE_FILE, "w") as f:
-                json.dump(state, f, indent=2)
-        except Exception as e:
-            print(f"[Memory] save error: {e}")
+        """Persist critical state to disk — non-blocking via background thread."""
+        import threading
+        state = {
+            "pattern_scores":       self._pattern_scores,
+            "current_strategy":     self._current_strategy,
+            "strategy_confidence":  self._strategy_confidence,
+            "goal":                 self._goal,
+            "strategy_overrides":   self._strategy_overrides,
+            "consecutive_losses":   self._consecutive_losses,
+            "consecutive_wins":     self._consecutive_wins,
+            "emergency_halted":     self._emergency_halted,
+            "session_thoughts":     self._session_thoughts[-50:],
+            "session_plans":        self._session_plans[-20:],
+            "saved_at":             time.time(),
+        }
+
+        def _write() -> None:
+            try:
+                import tempfile, os
+                tmp = AGENT_STATE_FILE + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(state, f, indent=2)
+                os.replace(tmp, AGENT_STATE_FILE)   # atomic rename — no partial writes
+            except Exception as e:
+                print(f"[Memory] save error: {e}")
+
+        threading.Thread(target=_write, daemon=True).start()
 
     def _load_state(self) -> None:
         """Restore persisted state from disk on startup."""
