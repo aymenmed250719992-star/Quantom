@@ -38,6 +38,8 @@ class TradingScheduler:
         self._running = False
         self._scan_lock = asyncio.Lock()
         self._scan_number: int = 0          # 0 = not yet run; first scan = 1
+        # ── AI key health tracker (provider+label → last_ok bool) ─────────────
+        self._key_health: dict[str, bool] = {}
 
     def set_broadcast_fn(self, fn: Callable) -> None:
         self._broadcast_fn = fn
@@ -150,6 +152,35 @@ class TradingScheduler:
         # ── Price feed start ─────────────────────────────────────────────────
         asyncio.create_task(self._start_price_feed())
 
+        # ── AI key health monitor (every 30 min) ─────────────────────────────
+        try:
+            self.scheduler.remove_job("ai_key_retry")
+        except Exception:
+            pass
+        self.scheduler.add_job(
+            self._retry_failed_keys,
+            "interval",
+            minutes=30,
+            id="ai_key_retry",
+            next_run_time=datetime.now(),
+            max_instances=1,
+            coalesce=True,
+        )
+
+        # ── Memory auto-consolidation (every 6 hours) ─────────────────────────
+        try:
+            self.scheduler.remove_job("memory_consolidation")
+        except Exception:
+            pass
+        self.scheduler.add_job(
+            self._consolidate_memory,
+            "interval",
+            hours=6,
+            id="memory_consolidation",
+            max_instances=1,
+            coalesce=True,
+        )
+
         # ── Audit trail init ─────────────────────────────────────────────────
         try:
             from audit_trail import AuditTrail
@@ -163,7 +194,8 @@ class TradingScheduler:
         if not self._running:
             return
         for job_id in ("market_scan", "gemini_news_poll", "crowd_refresh",
-                       "onchain_refresh", "genetic_optimizer", "correlation_refresh"):
+                       "onchain_refresh", "genetic_optimizer", "correlation_refresh",
+                       "ai_key_retry", "memory_consolidation"):
             try:
                 self.scheduler.remove_job(job_id)
             except Exception:
@@ -204,6 +236,122 @@ class TradingScheduler:
             }))
         except Exception as e:
             print(f"[OnChain] Refresh error: {e}")
+
+    # ── AI Key Health Monitor ─────────────────────────────────────────────────
+
+    async def _retry_failed_keys(self) -> None:
+        """
+        كل 30 دقيقة: يختبر كل مفاتيح AI المخزنة.
+        - إذا عاد مفتاح معطل → إشعار فوري + إعادة تفعيله
+        - إذا مات مفتاح كان يعمل → تحذير فوري
+        """
+        import httpx, asyncio as _asyncio, time as _time
+
+        _DEFAULTS = {
+            "gemini": ("https://generativelanguage.googleapis.com", "gemini-2.0-flash"),
+            "openai": ("https://api.openai.com/v1",                 "gpt-4o-mini"),
+            "claude": ("https://api.anthropic.com/v1",              "claude-3-5-haiku-20241022"),
+            "grok":   ("https://api.x.ai/v1",                       "grok-3-mini"),
+            "groq":   ("https://api.groq.com/openai/v1",            "llama-3.3-70b-versatile"),
+        }
+
+        async def _ping(row: dict) -> tuple[str, bool, int]:
+            provider = (row.get("provider") or "").lower()
+            api_key  = row.get("api_key") or ""
+            label    = row.get("label") or provider.upper()
+            model    = row.get("model") or ""
+            base_url = row.get("base_url") or ""
+            b_url, default_model = _DEFAULTS.get(provider, (base_url, model or "gpt-4o-mini"))
+            use_model = model or default_model
+            if not api_key or not b_url:
+                return label, False, 0
+            t0 = _time.monotonic()
+            try:
+                async with httpx.AsyncClient(timeout=10) as c:
+                    if provider == "gemini":
+                        r = await c.post(
+                            f"https://generativelanguage.googleapis.com/v1beta/models/{use_model}:generateContent?key={api_key}",
+                            json={"contents": [{"parts": [{"text": "hi"}]}]},
+                        )
+                    elif provider == "claude":
+                        r = await c.post(
+                            f"{b_url}/messages",
+                            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
+                            json={"model": use_model, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]},
+                        )
+                    else:
+                        r = await c.post(
+                            f"{b_url}/chat/completions",
+                            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                            json={"model": use_model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1},
+                        )
+                ok = r.status_code in (200, 201)
+            except Exception:
+                ok = False
+            latency = round((_time.monotonic() - t0) * 1000)
+            return label, ok, latency
+
+        try:
+            rows = await self.db.get_ai_keys()
+            if not rows:
+                return
+
+            results = await _asyncio.gather(*[_ping(r) for r in rows])
+
+            recovered, degraded = [], []
+            for label, ok, latency in results:
+                prev = self._key_health.get(label)   # None = first time
+                self._key_health[label] = ok
+                if prev is False and ok:              # was dead → now alive
+                    recovered.append((label, latency))
+                elif prev is True and not ok:         # was alive → now dead
+                    degraded.append(label)
+
+            # ── Broadcast events ──────────────────────────────────────────────
+            for label, ms in recovered:
+                msg = f"🟢 مفتاح AI عاد للعمل: {label} ({ms}ms) — تمّ إعادة تفعيله تلقائياً"
+                print(f"[AIKeyMonitor] {msg}")
+                await self._broadcast(json.dumps({"type": "log", "message": msg}))
+                # Reload key into active pool
+                try:
+                    from ai_agent import AIAgent
+                    AIAgent.get_instance().load_keys_from_env()
+                except Exception:
+                    pass
+
+            for label in degraded:
+                msg = f"🔴 مفتاح AI توقف عن العمل: {label} — سيُعاد الاختبار خلال 30 دقيقة"
+                print(f"[AIKeyMonitor] {msg}")
+                await self._broadcast(json.dumps({"type": "log", "message": msg}))
+
+            # ── Summary log (only if we have keys) ───────────────────────────
+            ok_count   = sum(1 for _, ok, _ in results if ok)
+            fail_count = len(results) - ok_count
+            status_emoji = "✅" if fail_count == 0 else ("⚠️" if ok_count > 0 else "❌")
+            print(f"[AIKeyMonitor] {status_emoji} {ok_count}/{len(results)} مفاتيح AI نشطة")
+
+        except Exception as e:
+            print(f"[AIKeyMonitor] Error: {e}")
+
+    # ── Memory Auto-Consolidation ─────────────────────────────────────────────
+
+    async def _consolidate_memory(self) -> None:
+        """
+        كل 6 ساعات: يراجع الدروس المتراكمة ويستخلص منها قواعد استراتيجية.
+        يحوّل الدروس المتفرقة إلى معرفة راسخة في bot_knowledge.
+        """
+        try:
+            from memory_engine import MemoryEngine
+            engine = MemoryEngine(self.db)
+            summary = await engine.consolidate_lessons()
+            if summary:
+                print(f"[Memory] 🧠 Consolidation done: {summary}")
+                await self._broadcast(json.dumps({
+                    "type": "log",
+                    "message": f"🧠 ذاكرة: {summary}",
+                }))
+        except Exception as e:
+            print(f"[Memory] Consolidation error: {e}")
 
     # ── Genetic optimizer ─────────────────────────────────────────────────────
 

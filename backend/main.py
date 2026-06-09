@@ -2002,6 +2002,42 @@ async def get_full_memory():
     return await engine.get_memory_summary()
 
 
+@router.get("/agent/efficiency")
+async def get_agent_efficiency():
+    """
+    درجة كفاءة البوت الذاتية + زخم الاستراتيجية + trend الأداء.
+    يُستدعى من شاشة Brain في التطبيق.
+    """
+    from agent_core import TradingAgent
+    try:
+        agent = TradingAgent.get_instance(db=db)
+        mem   = agent.memory
+        score    = mem.compute_self_score()
+        momentum = mem.get_strategy_momentum()
+        trend    = mem.get_performance_trend()
+        return {
+            "ok":          True,
+            "score":       score,
+            "momentum":    momentum,
+            "trend_text":  trend,
+            "timestamp":   __import__("datetime").datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e), "score": {"score": 50, "recommendation": "تهيئة البوت أولاً"}}
+
+
+@router.post("/agent/consolidate")
+async def trigger_memory_consolidation():
+    """يشغّل دمج الذاكرة فوراً (بدلاً من انتظار 6 ساعات)."""
+    from memory_engine import MemoryEngine
+    try:
+        engine  = MemoryEngine(db)
+        summary = await engine.consolidate_lessons()
+        return {"ok": True, "summary": summary or "لا يوجد ما يكفي من البيانات بعد (يلزم 5+ صفقات مغلقة)"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @router.get("/agent/memory/search")
 async def search_agent_memory(q: str = "", category: str = ""):
     """Search across lessons and knowledge."""

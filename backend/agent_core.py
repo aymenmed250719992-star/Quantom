@@ -226,6 +226,136 @@ class AgentMemory:
         except Exception:
             return []
 
+    # ── كفاءة تلقائية ────────────────────────────────────────────────────────
+
+    def compute_self_score(self) -> dict:
+        """
+        يحسب درجة كفاءة البوت (0–100) بناءً على عوامل متعددة.
+        يُستخدم لاتخاذ قرار بتغيير الاستراتيجية تلقائياً.
+        """
+        score = 50.0   # نقطة البداية
+        factors: list[str] = []
+
+        # ── عامل ١: نسبة النجاح المتراكمة ───────────────────────────────
+        total_trades = len(self._last_3_results)
+        if total_trades >= 3:
+            recent_wr = sum(self._last_3_results) / total_trades * 100
+            wr_bonus  = (recent_wr - 50) * 0.6     # ±30 نقطة max
+            score    += wr_bonus
+            factors.append(f"win_rate={recent_wr:.0f}%({'+' if wr_bonus>=0 else ''}{wr_bonus:.0f}pts)")
+
+        # ── عامل ٢: الـ streak الحالي ───────────────────────────────────
+        if self._consecutive_wins >= 3:
+            bonus = min(15, self._consecutive_wins * 3)
+            score += bonus
+            factors.append(f"win_streak={self._consecutive_wins}(+{bonus}pts)")
+        elif self._consecutive_losses >= 2:
+            penalty = min(20, self._consecutive_losses * 5)
+            score  -= penalty
+            factors.append(f"loss_streak={self._consecutive_losses}(-{penalty}pts)")
+
+        # ── عامل ٣: ثقة الاستراتيجية الحالية ──────────────────────────
+        conf_bonus = (self._strategy_confidence - 0.5) * 20
+        score += conf_bonus
+        factors.append(f"strategy_conf={self._strategy_confidence:.0%}({'+' if conf_bonus>=0 else ''}{conf_bonus:.0f}pts)")
+
+        # ── عامل ٤: أداء الأنماط ────────────────────────────────────────
+        best_patterns = self.get_best_patterns(3)
+        if best_patterns:
+            avg_pattern_wr = sum(p["win_rate"] for p in best_patterns) / len(best_patterns)
+            pat_bonus = (avg_pattern_wr - 50) * 0.3
+            score += pat_bonus
+            factors.append(f"pattern_avg_wr={avg_pattern_wr:.0f}%({'+' if pat_bonus>=0 else ''}{pat_bonus:.0f}pts)")
+
+        # ── طبيعي بين 0 و100 ────────────────────────────────────────────
+        final_score = max(0.0, min(100.0, score))
+
+        # ── توصية تلقائية ────────────────────────────────────────────────
+        if final_score >= 75:
+            recommendation = "حافظ على الاستراتيجية الحالية"
+        elif final_score >= 55:
+            recommendation = "مراقبة — لا تغيير مطلوب"
+        elif final_score >= 40:
+            recommendation = "راجع الاستراتيجية — تراجع ملحوظ"
+        else:
+            recommendation = "تغيير الاستراتيجية فوري — أداء ضعيف"
+
+        return {
+            "score":          round(final_score, 1),
+            "recommendation": recommendation,
+            "factors":        factors,
+            "strategy":       self._current_strategy,
+            "emergency":      self._emergency_halted,
+        }
+
+    def get_strategy_momentum(self) -> dict:
+        """
+        هل الاستراتيجية الحالية تعمل؟
+        يحلل آخر 10 نتائج لمعرفة الزخم الفعلي.
+        """
+        recent = self._last_3_results[-10:] if len(self._last_3_results) >= 3 else self._last_3_results
+        if not recent:
+            return {"momentum": "unknown", "direction": "neutral", "trades": 0}
+
+        total = len(recent)
+        wins  = sum(recent)
+        wr    = wins / total * 100
+
+        # قارن النصف الأول بالنصف الثاني
+        if total >= 6:
+            first_half  = recent[:total // 2]
+            second_half = recent[total // 2:]
+            wr_first  = sum(first_half)  / len(first_half)  * 100
+            wr_second = sum(second_half) / len(second_half) * 100
+            delta = wr_second - wr_first
+            direction = "rising" if delta > 10 else ("falling" if delta < -10 else "stable")
+        else:
+            direction = "stable"
+            delta     = 0.0
+
+        if wr >= 65:
+            momentum = "strong_positive"
+        elif wr >= 50:
+            momentum = "positive"
+        elif wr >= 35:
+            momentum = "negative"
+        else:
+            momentum = "strong_negative"
+
+        return {
+            "momentum":  momentum,
+            "direction": direction,
+            "win_rate":  round(wr, 1),
+            "delta":     round(delta, 1),
+            "trades":    total,
+            "strategy":  self._current_strategy,
+        }
+
+    def get_performance_trend(self) -> str:
+        """
+        نص قصير يصف أداء البوت الأخير — للحقن في AI context.
+        """
+        momentum = self.get_strategy_momentum()
+        score    = self.compute_self_score()
+        wr       = momentum.get("win_rate", 0)
+        direction = momentum.get("direction", "stable")
+        sc        = score.get("score", 50)
+
+        emoji_map = {
+            "strong_positive": "🏆",
+            "positive":        "✅",
+            "negative":        "⚠️",
+            "strong_negative": "🚨",
+            "unknown":         "❓",
+        }
+        emoji = emoji_map.get(momentum.get("momentum", "unknown"), "")
+
+        trend_ar = {"rising": "متصاعد", "falling": "منحدر", "stable": "مستقر"}.get(direction, "")
+        return (
+            f"{emoji} الأداء الأخير: Win Rate {wr}% | اتجاه {trend_ar} | "
+            f"كفاءة البوت: {sc}/100 | استراتيجية: {self._current_strategy}"
+        )
+
     async def save_strategic_insight(self, insight: str, source: str = "reflection") -> None:
         try:
             await self.db.save_lesson({

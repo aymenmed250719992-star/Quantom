@@ -116,6 +116,21 @@ function ResultDot({ win }: { win: boolean }) {
 }
 const rd = StyleSheet.create({ dot: { width: 8, height: 8, borderRadius: 4 } });
 
+const ef = StyleSheet.create({
+  scoreCircle:    { width: 64, height: 64, borderRadius: 32, borderWidth: 2.5, alignItems: "center", justifyContent: "center" },
+  scoreNum:       { fontSize: 20, fontWeight: "800" },
+  scoreMax:       { fontSize: 9,  fontWeight: "600", marginTop: -2 },
+  barBg:          { height: 6, borderRadius: 3, overflow: "hidden" },
+  barFill:        { height: 6, borderRadius: 3 },
+  recTxt:         { fontSize: 12, fontWeight: "700" },
+  smallTxt:       { fontSize: 11 },
+  factorChip:     { borderRadius: 6, borderWidth: 1, paddingHorizontal: 7, paddingVertical: 3 },
+  factorTxt:      { fontSize: 10, fontWeight: "600" },
+  consolidateBtn: { flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 8, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 6 },
+  consolidateTxt: { fontSize: 12, fontWeight: "700" },
+  consolidateMsg: { fontSize: 11, flex: 1 },
+});
+
 // ── Main Screen ───────────────────────────────────────────────────────────────
 
 const BRAIN_WELCOME: BrainMessage = {
@@ -145,6 +160,34 @@ export default function BrainScreen() {
   const [msgMap, setMsgMap]   = useState<Record<string, string>>({});
   const [goalInput, setGoalInput]       = useState("");
   const [editGoal, setEditGoal]         = useState(false);
+
+  // ── Efficiency state ──────────────────────────────────────────────────────
+  const [efficiency, setEfficiency]         = useState<any>(null);
+  const [consolidating, setConsolidating]   = useState(false);
+  const [consolidateMsg, setConsolidateMsg] = useState("");
+
+  const loadEfficiency = useCallback(async () => {
+    try {
+      const r = await fetch(`${getApiBase()}/agent/efficiency`);
+      const d = await safeJson(r);
+      if (d?.ok) setEfficiency(d);
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => { loadEfficiency(); }, [loadEfficiency]);
+
+  const handleConsolidate = async () => {
+    setConsolidating(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    try {
+      const r = await fetch(`${getApiBase()}/agent/consolidate`, { method: "POST" });
+      const d = await safeJson(r);
+      setConsolidateMsg(d?.summary ?? "تمّ");
+      await loadEfficiency();
+      setTimeout(() => setConsolidateMsg(""), 4000);
+    } catch { setConsolidateMsg("❌ فشل الاتصال"); }
+    setConsolidating(false);
+  };
 
   // ── Full memory state ─────────────────────────────────────────────────────
   const [memData, setMemData]           = useState<any>(null);
@@ -424,6 +467,76 @@ export default function BrainScreen() {
           </Pressable>
         </Animated.View>
       )}
+
+      {/* ── Efficiency Score Card ── */}
+      {efficiency && (() => {
+        const sc   = efficiency.score?.score ?? 50;
+        const rec  = efficiency.score?.recommendation ?? "";
+        const mom  = efficiency.momentum ?? {};
+        const trend = efficiency.trend_text ?? "";
+        const factors: string[] = efficiency.score?.factors ?? [];
+        const scoreColor = sc >= 70 ? "#10B981" : sc >= 50 ? "#F59E0B" : "#EF4444";
+        const momEmoji = mom.momentum === "strong_positive" ? "🏆"
+                       : mom.momentum === "positive"        ? "✅"
+                       : mom.momentum === "negative"        ? "⚠️"
+                       : mom.momentum === "strong_negative" ? "🚨" : "❓";
+        const dirAr = mom.direction === "rising" ? "📈 متصاعد"
+                    : mom.direction === "falling" ? "📉 منحدر"
+                    : "➡️ مستقر";
+        return (
+          <>
+            <SectionHeader title="كفاءة البوت التلقائية" icon="activity" color={scoreColor} />
+            <Card style={{ gap: 10 }}>
+              {/* Score bar */}
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+                <View style={[ef.scoreCircle, { borderColor: scoreColor }]}>
+                  <Text style={[ef.scoreNum, { color: scoreColor }]}>{sc.toFixed(0)}</Text>
+                  <Text style={[ef.scoreMax, { color: colors.mutedForeground }]}>/100</Text>
+                </View>
+                <View style={{ flex: 1, gap: 4 }}>
+                  <View style={[ef.barBg, { backgroundColor: colors.muted }]}>
+                    <View style={[ef.barFill, { width: `${Math.max(2, sc)}%` as any, backgroundColor: scoreColor }]} />
+                  </View>
+                  <Text style={[ef.recTxt, { color: colors.foreground }]}>{rec}</Text>
+                  {mom.trades > 0 && (
+                    <Text style={[ef.smallTxt, { color: colors.mutedForeground }]}>
+                      {momEmoji} Win Rate {mom.win_rate}% | {dirAr} | {mom.trades} صفقات
+                    </Text>
+                  )}
+                </View>
+              </View>
+
+              {/* Factors */}
+              {factors.length > 0 && (
+                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 5 }}>
+                  {factors.map((f, i) => (
+                    <View key={i} style={[ef.factorChip, { backgroundColor: colors.muted, borderColor: colors.border }]}>
+                      <Text style={[ef.factorTxt, { color: colors.mutedForeground }]}>{f}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+
+              {/* Consolidate button */}
+              <View style={{ flexDirection: "row", gap: 8, alignItems: "center", marginTop: 2 }}>
+                <Pressable
+                  style={[ef.consolidateBtn, { backgroundColor: colors.muted, borderColor: colors.border }]}
+                  onPress={handleConsolidate}
+                  disabled={consolidating}
+                >
+                  {consolidating
+                    ? <ActivityIndicator size="small" color={colors.primary} />
+                    : <><Feather name="database" size={13} color={colors.primary} /><Text style={[ef.consolidateTxt, { color: colors.primary }]}>دمج الذاكرة الآن</Text></>
+                  }
+                </Pressable>
+                {!!consolidateMsg && (
+                  <Text style={[ef.consolidateMsg, { color: colors.mutedForeground }]} numberOfLines={2}>{consolidateMsg}</Text>
+                )}
+              </View>
+            </Card>
+          </>
+        );
+      })()}
 
       {/* ── State Summary ── */}
       <SectionHeader title="حالة الأيجنت" icon="cpu" color="#3B82F6" />
