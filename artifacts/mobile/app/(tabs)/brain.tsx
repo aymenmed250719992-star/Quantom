@@ -116,6 +116,11 @@ function ResultDot({ win }: { win: boolean }) {
 }
 const rd = StyleSheet.create({ dot: { width: 8, height: 8, borderRadius: 4 } });
 
+const qs = StyleSheet.create({
+  btn: { borderRadius: 8, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 5 },
+  txt: { fontSize: 11, fontWeight: "600" },
+});
+
 const ef = StyleSheet.create({
   scoreCircle:    { width: 64, height: 64, borderRadius: 32, borderWidth: 2.5, alignItems: "center", justifyContent: "center" },
   scoreNum:       { fontSize: 20, fontWeight: "800" },
@@ -251,6 +256,17 @@ export default function BrainScreen() {
       } catch { /* ignore */ }
     })();
   }, []);
+
+  // ── Quick skill buttons ───────────────────────────────────────────────────
+  const QUICK_SKILLS = [
+    { label: "📊 محفظتي",      msg: "حلل محفظتي الآن" },
+    { label: "📅 تقرير أسبوعي", msg: "أعطني تقرير الأسبوع" },
+    { label: "📈 أداء الأنماط", msg: "تقرير أداء الأنماط التقنية" },
+    { label: "🛡️ فحص المخاطرة", msg: "فحص مستوى المخاطرة الآن" },
+    { label: "🔍 السوق الآن",   msg: "شوف السوق الآن وأسعار BTC و ETH" },
+    { label: "🧠 ماذا تعلمت؟",  msg: "ملخص ما تعلمته حتى الآن" },
+    { label: "⚖️ قارن الاستراتيجيات", msg: "قارن أداء الاستراتيجيات" },
+  ] as const;
 
   // ── Send message to brain ─────────────────────────────────────────────────
   const sendBrainMessage = async (text?: string) => {
@@ -1137,7 +1153,26 @@ export default function BrainScreen() {
       )}
 
       {/* ── BRAIN CHAT — Natural Language Interface ── */}
-      <SectionHeader title="تحدث مع العقل مباشرة" icon="message-square" color="#6366F1" />
+      <SectionHeader title="تحدث مع العقل — اطلب أي شيء" icon="message-square" color="#6366F1" />
+
+      {/* Quick skill shortcuts */}
+      <View style={{ paddingHorizontal: 16, marginBottom: 8 }}>
+        <Text style={[{ fontSize: 10, fontWeight: "600", letterSpacing: 0.8, color: colors.mutedForeground, marginBottom: 6 }]}>
+          اضغط للسؤال السريع:
+        </Text>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+          {QUICK_SKILLS.map((sk, i) => (
+            <Pressable
+              key={i}
+              style={[qs.btn, { backgroundColor: colors.muted, borderColor: colors.border }]}
+              onPress={() => sendBrainMessage(sk.msg)}
+              disabled={chatLoading}
+            >
+              <Text style={[qs.txt, { color: colors.foreground }]}>{sk.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+      </View>
     </ScrollView>
 
     {/* Brain Chat — fixed at bottom (sibling of ScrollView inside root KAV) */}
@@ -1229,6 +1264,11 @@ export default function BrainScreen() {
             }
 
             // ── Normal chat bubble ─────────────────────────────────────────
+            // Split main reply from skill result block (separated by ---)
+            const parts        = item.content.split(/\n---\n/);
+            const mainContent  = parts[0]?.trim() ?? item.content;
+            const skillContent = parts.slice(1).join("\n---\n").trim();
+
             return (
               <View style={[s.chatMsgWrap, isUser ? s.chatUserWrap : s.chatBotWrap]}>
                 {!isUser && (
@@ -1236,29 +1276,64 @@ export default function BrainScreen() {
                     <Feather name="cpu" size={9} color={provColor} />
                   </View>
                 )}
-                <View style={{ maxWidth: "80%", gap: 3 }}>
-                  <View style={[
-                    s.chatBubble,
-                    isUser
-                      ? [s.chatUserBubble, { backgroundColor: "#6366F1" }]
-                      : [s.chatBotBubble, { backgroundColor: colors.card, borderColor: colors.border }],
-                  ]}>
-                    <Text style={[s.chatBubbleTxt, { color: isUser ? "#fff" : colors.foreground }]}>
-                      {item.content}
-                    </Text>
-                  </View>
-                  {item.executed_command && (
+                <View style={{ maxWidth: "85%", gap: 4 }}>
+                  {/* Main reply bubble */}
+                  {mainContent ? (
+                    <View style={[
+                      s.chatBubble,
+                      isUser
+                        ? [s.chatUserBubble, { backgroundColor: "#6366F1" }]
+                        : [s.chatBotBubble, { backgroundColor: colors.card, borderColor: colors.border }],
+                    ]}>
+                      <Text style={[s.chatBubbleTxt, { color: isUser ? "#fff" : colors.foreground }]}>
+                        {mainContent}
+                      </Text>
+                    </View>
+                  ) : null}
+
+                  {/* Skill result card — special styled block */}
+                  {!isUser && skillContent ? (
+                    <View style={{
+                      borderRadius: 10,
+                      borderLeftWidth: 3,
+                      borderLeftColor: "#6366F1",
+                      backgroundColor: `${provColor}0D`,
+                      borderWidth: 1,
+                      borderColor: `${provColor}22`,
+                      padding: 10,
+                    }}>
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 5, marginBottom: 5 }}>
+                        <Feather name="zap" size={10} color="#6366F1" />
+                        <Text style={{ fontSize: 9, fontWeight: "800", color: "#6366F1", letterSpacing: 0.8, textTransform: "uppercase" }}>
+                          نتيجة المهارة
+                        </Text>
+                      </View>
+                      <Text style={{ fontSize: 12, color: colors.foreground, lineHeight: 18, fontFamily: "monospace" }}>
+                        {skillContent}
+                      </Text>
+                    </View>
+                  ) : null}
+
+                  {/* If isUser and has ---, just show everything normally */}
+                  {isUser && !mainContent ? (
+                    <View style={[s.chatBubble, s.chatUserBubble, { backgroundColor: "#6366F1" }]}>
+                      <Text style={[s.chatBubbleTxt, { color: "#fff" }]}>{item.content}</Text>
+                    </View>
+                  ) : null}
+
+                  {item.executed_command ? (
                     <View style={s.cmdBadge}>
                       <Feather name="check-circle" size={9} color="#10B981" />
                       <Text style={s.cmdBadgeTxt}>✅ نُفِّذ: {item.executed_command}</Text>
                     </View>
-                  )}
-                  {!isUser && item.provider && item.provider !== "rule-based" && (
+                  ) : null}
+
+                  {!isUser && item.provider && item.provider !== "rule-based" ? (
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 3, marginLeft: 4 }}>
                       <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: provColor }} />
                       <Text style={{ fontSize: 9, color: provColor, fontWeight: "700" }}>{item.provider}</Text>
                     </View>
-                  )}
+                  ) : null}
                 </View>
               </View>
             );

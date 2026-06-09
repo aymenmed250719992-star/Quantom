@@ -774,6 +774,25 @@ async def _learn_from_conversation(question: str, answer: str, source: str) -> N
         print(f"[learn_from_conversation] error: {e}")
 
 
+async def _learn_from_skill_result(skill_name: str, data: dict) -> None:
+    """يتعلم البوت من نتيجة كل مهارة ينفّذها."""
+    try:
+        summary = str(data)[:300]
+        await db.save_lesson({
+            "lesson": f"[SKILL RESULT] {skill_name}: {summary}",
+            "symbol": "QUANTOM_CORE",
+            "market_condition": "skill_execution",
+            "pattern": f"skill_{skill_name}",
+            "outcome": "learn",
+            "importance": 6.0,
+            "category": "strategy",
+            "tags": f"skill,{skill_name},auto_learned",
+            "source": "skill_engine",
+        })
+    except Exception:
+        pass
+
+
 @router.post("/chat")
 async def chat_endpoint(request: ChatRequest):
     from ai_agent import AIAgent
@@ -953,6 +972,39 @@ async def brain_chat_endpoint(request: BrainChatRequest):
         except Exception as _ce:
             print(f"[BrainChat] Command exec error: {_ce}")
 
+    # ── Skills Engine: execute bot skills ─────────────────────────────────
+    skill_results: list[str] = []
+    import re as _re_skill
+    # Parse [SKILL: name=params] from the raw response
+    skill_tags = _re_skill.findall(
+        r"\[SKILL:\s*([a-z_]+)\s*=\s*([^\]]*)\]",
+        result.get("response", ""),
+        _re_skill.IGNORECASE,
+    )
+    if skill_tags:
+        try:
+            from bot_skills import dispatch_skill
+            skill_mem = ta.memory if ta else None
+            skill_tasks = [dispatch_skill(name.strip(), params.strip(), db, skill_mem)
+                           for name, params in skill_tags]
+            skill_outputs = await asyncio.gather(*skill_tasks, return_exceptions=True)
+
+            for i, (name, params) in enumerate(skill_tags):
+                res = skill_outputs[i]
+                if isinstance(res, Exception):
+                    skill_results.append(f"❌ خطأ في مهارة {name}: {res}")
+                elif isinstance(res, dict):
+                    display = res.get("display", "")
+                    if display:
+                        skill_results.append(display)
+                    # تعلّم من نتيجة المهارة
+                    if res.get("ok") and res.get("data"):
+                        asyncio.ensure_future(
+                            _learn_from_skill_result(name, res["data"])
+                        )
+        except Exception as _se:
+            print(f"[Skills] Error: {_se}")
+
     # ── Meta Engine: execute file/sql/shell commands ───────────────────────
     meta_results: list[str] = []
     all_cmds = result.get("all_commands", [])
@@ -1023,19 +1075,37 @@ async def brain_chat_endpoint(request: BrainChatRequest):
     brain_answer   = result.get("response", "")
     brain_provider = result.get("provider", "")
 
-    # Append meta results to brain answer
+    # ── Strip [SKILL: ...] tags from the displayed response ───────────────
+    import re as _re_clean
+    brain_answer = _re_clean.sub(r"\[SKILL:\s*[^\]]+\]", "", brain_answer).strip()
+
+    # ── Append skill results (before meta results) ────────────────────────
+    if skill_results:
+        skill_block = "\n\n---\n" + "\n\n".join(skill_results)
+        brain_answer = (brain_answer + skill_block).strip()
+
+    # ── Append meta results ───────────────────────────────────────────────
     if meta_results:
         meta_block = "\n\n---\n🔧 **نتائج التنفيذ:**\n" + "\n\n".join(meta_results)
         brain_answer = (brain_answer + meta_block).strip()
+
     # Save assistant response
+    metadata_dict: dict = {}
+    if executed_command:
+        metadata_dict["executed_command"] = executed_command
+    if skill_results:
+        metadata_dict["skills_executed"] = [name for name, _ in skill_tags]
+        metadata_dict["has_skill_result"] = True
+
     await db.save_message(
         role="assistant",
         content=brain_answer,
         screen="brain",
         provider=brain_provider,
         session_id=request.session_id or "",
-        metadata={"executed_command": executed_command} if executed_command else {},
+        metadata=metadata_dict,
     )
+
     # 🧠 Learn from brain conversation if AI-powered
     if brain_provider and brain_provider != "rule-based" and brain_answer:
         import asyncio as _aio
@@ -1049,6 +1119,8 @@ async def brain_chat_endpoint(request: BrainChatRequest):
         "key":               result.get("key"),
         "executed_command":  executed_command,
         "meta_count":        len(meta_results),
+        "skills_count":      len(skill_results),
+        "skills_executed":   [name for name, _ in skill_tags],
     }
 
 
@@ -2034,6 +2106,46 @@ async def trigger_memory_consolidation():
         engine  = MemoryEngine(db)
         summary = await engine.consolidate_lessons()
         return {"ok": True, "summary": summary or "لا يوجد ما يكفي من البيانات بعد (يلزم 5+ صفقات مغلقة)"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.post("/agent/auto-learn")
+async def trigger_auto_learning():
+    """يشغّل دورة التعلم التلقائي فوراً — يعدّل الاستراتيجية وحد الثقة والأنماط."""
+    from learning_engine import run_auto_learning
+    from agent_core import TradingAgent
+    global _current_threshold
+    try:
+        try:
+            ta  = TradingAgent.get_instance(db=db)
+            mem = ta.memory
+        except Exception:
+            mem = None
+        results = await run_auto_learning(db, mem, _current_threshold)
+
+        # تطبيق تغيير حد الثقة إذا تغيّر
+        thr = results.get("threshold", {})
+        if thr.get("changed"):
+            new_thr = thr["new"]
+            _current_threshold = new_thr
+            os.environ["MIN_CONFIDENCE_SCORE"] = str(new_thr)
+
+        summary = []
+        strat = results.get("strategy", {})
+        if strat.get("changed"):
+            summary.append(f"استراتيجية: {strat['old']} → {strat['new']}")
+        if thr.get("changed"):
+            summary.append(f"حد الثقة: {thr['old']}% → {thr['new']}%")
+        regime_count = len(results.get("regime_insights", []))
+        if regime_count > 0:
+            summary.append(f"{regime_count} رؤى نظام سوقي جديدة")
+
+        return {
+            "ok":     True,
+            "results": results,
+            "summary": " | ".join(summary) if summary else "لا تغييرات — الأداء ضمن النطاق المثالي",
+        }
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

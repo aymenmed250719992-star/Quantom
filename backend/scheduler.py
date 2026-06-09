@@ -181,6 +181,20 @@ class TradingScheduler:
             coalesce=True,
         )
 
+        # ── Auto-learning engine (every 1 hour) ──────────────────────────────
+        try:
+            self.scheduler.remove_job("auto_learning")
+        except Exception:
+            pass
+        self.scheduler.add_job(
+            self._run_auto_learning,
+            "interval",
+            hours=1,
+            id="auto_learning",
+            max_instances=1,
+            coalesce=True,
+        )
+
         # ── Audit trail init ─────────────────────────────────────────────────
         try:
             from audit_trail import AuditTrail
@@ -195,7 +209,7 @@ class TradingScheduler:
             return
         for job_id in ("market_scan", "gemini_news_poll", "crowd_refresh",
                        "onchain_refresh", "genetic_optimizer", "correlation_refresh",
-                       "ai_key_retry", "memory_consolidation"):
+                       "ai_key_retry", "memory_consolidation", "auto_learning"):
             try:
                 self.scheduler.remove_job(job_id)
             except Exception:
@@ -236,6 +250,50 @@ class TradingScheduler:
             }))
         except Exception as e:
             print(f"[OnChain] Refresh error: {e}")
+
+    # ── Auto-Learning Engine ──────────────────────────────────────────────────
+
+    async def _run_auto_learning(self) -> None:
+        """
+        كل ساعة: يُشغّل محرك التعلم التلقائي.
+        يُعدّل الاستراتيجية، حد الثقة، ونقاط الأنماط بناءً على الأداء الحقيقي.
+        """
+        try:
+            from learning_engine import run_auto_learning
+            from agent_core import TradingAgent
+            global _current_threshold
+
+            try:
+                ta  = TradingAgent.get_instance(db=self.db)
+                mem = ta.memory
+            except Exception:
+                mem = None
+
+            current_thr = int(os.environ.get("MIN_CONFIDENCE_SCORE", 55))
+            results = await run_auto_learning(self.db, mem, current_thr)
+
+            # ── تغيير الاستراتيجية ─────────────────────────────────────────
+            strat = results.get("strategy", {})
+            if strat.get("changed"):
+                msg = f"🧠 AutoLearn: {strat['reason']}"
+                print(f"[AutoLearn] {msg}")
+                await self._broadcast(json.dumps({"type": "log", "message": msg}))
+
+            # ── تغيير حد الثقة ─────────────────────────────────────────────
+            thr = results.get("threshold", {})
+            if thr.get("changed"):
+                new_thr = thr["new"]
+                os.environ["MIN_CONFIDENCE_SCORE"] = str(new_thr)
+                msg = f"🧠 AutoLearn: {thr['reason']}"
+                print(f"[AutoLearn] {msg}")
+                await self._broadcast(json.dumps({"type": "log", "message": msg}))
+
+            # ── رؤى النظام السوقي ──────────────────────────────────────────
+            for insight in results.get("regime_insights", [])[:2]:
+                print(f"[AutoLearn] Regime: {insight}")
+
+        except Exception as e:
+            print(f"[AutoLearn] Error: {e}")
 
     # ── AI Key Health Monitor ─────────────────────────────────────────────────
 
