@@ -1267,6 +1267,79 @@ async def delete_ai_key(provider: str, label: str = ""):
     return {"success": removed > 0, "removed": removed, "status": status}
 
 
+@router.get("/ai/keys/test-all")
+async def test_all_ai_keys():
+    """Test every stored AI key live — returns latency, validity, and model info."""
+    import asyncio, time as _time
+    from ai_agent import AIAgent
+
+    rows = await db.get_ai_keys()
+    if not rows:
+        return {"results": [], "summary": {"total": 0, "ok": 0, "failed": 0}}
+
+    _DEFAULTS = {
+        "gemini": ("https://generativelanguage.googleapis.com", "gemini-2.0-flash"),
+        "openai": ("https://api.openai.com/v1",                 "gpt-4o-mini"),
+        "claude": ("https://api.anthropic.com/v1",              "claude-3-5-haiku-20241022"),
+        "grok":   ("https://api.x.ai/v1",                       "grok-3-mini"),
+        "groq":   ("https://api.groq.com/openai/v1",            "llama-3.3-70b-versatile"),
+    }
+
+    async def _ping_one(row: dict) -> dict:
+        provider  = (row.get("provider") or "").lower()
+        api_key   = row.get("api_key") or ""
+        label     = row.get("label") or provider.upper()
+        model     = row.get("model") or ""
+        base_url  = row.get("base_url") or ""
+
+        if not api_key:
+            return {"provider": provider, "label": label, "model": model,
+                    "ok": False, "latency_ms": None, "error": "مفتاح فارغ"}
+
+        b_url, default_model = _DEFAULTS.get(provider, (base_url, model or "gpt-4o-mini"))
+        if not b_url:
+            return {"provider": provider, "label": label, "model": model or default_model,
+                    "ok": False, "latency_ms": None, "error": "Base URL مفقود"}
+
+        use_model = model or default_model
+        t0 = _time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=12) as c:
+                if provider == "gemini":
+                    r = await c.post(
+                        f"https://generativelanguage.googleapis.com/v1beta/models/{use_model}:generateContent?key={api_key}",
+                        json={"contents": [{"parts": [{"text": "hi"}]}]},
+                    )
+                elif provider == "claude":
+                    r = await c.post(
+                        f"{b_url}/messages",
+                        headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
+                        json={"model": use_model, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]},
+                    )
+                else:
+                    r = await c.post(
+                        f"{b_url}/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json={"model": use_model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1},
+                    )
+            latency = round((_time.monotonic() - t0) * 1000)
+            ok = r.status_code in (200, 201)
+            error = None if ok else f"HTTP {r.status_code}"
+            return {"provider": provider, "label": label, "model": use_model,
+                    "ok": ok, "latency_ms": latency, "error": error}
+        except Exception as e:
+            latency = round((_time.monotonic() - t0) * 1000)
+            return {"provider": provider, "label": label, "model": use_model,
+                    "ok": False, "latency_ms": latency, "error": str(e)[:100]}
+
+    results = await asyncio.gather(*[_ping_one(r) for r in rows])
+    ok_count = sum(1 for r in results if r["ok"])
+    return {
+        "results": list(results),
+        "summary": {"total": len(results), "ok": ok_count, "failed": len(results) - ok_count},
+    }
+
+
 @router.get("/ai/news")
 async def get_news():
     """Fetch latest crypto + world news headlines."""

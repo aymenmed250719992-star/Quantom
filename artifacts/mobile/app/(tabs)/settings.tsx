@@ -328,6 +328,9 @@ function AIProviderSection() {
   const [showKey,      setShowKey]      = useState(false);
   const [saving,       setSaving]       = useState(false);
   const [testing,      setTesting]      = useState(false);
+  const [testingAll,   setTestingAll]   = useState(false);
+  const [testAllRes,   setTestAllRes]   = useState<any[] | null>(null);
+  const [testAllSum,   setTestAllSum]   = useState<{total:number;ok:number;failed:number}|null>(null);
   const [resetMsg,     setResetMsg]     = useState("");
   const [saveMsg,      setSaveMsg]      = useState("");
   const [activePreset, setActivePreset] = useState<string>("");
@@ -445,6 +448,26 @@ function AIProviderSection() {
       }
     } catch { setSaveMsg("❌ تعذّر الاتصال"); }
     setTimeout(() => setSaveMsg(""), 3000);
+  };
+
+  const handleTestAll = async () => {
+    setTestingAll(true);
+    setTestAllRes(null);
+    setTestAllSum(null);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    try {
+      const r = await fetch(`${getApiBase()}/ai/keys/test-all`);
+      const d = await safeJson(r);
+      if (d) {
+        setTestAllRes(d.results ?? []);
+        setTestAllSum(d.summary ?? null);
+        const allOk = (d.summary?.failed ?? 0) === 0;
+        Haptics.notificationAsync(
+          allOk ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Warning
+        );
+      }
+    } catch { /* ignore */ }
+    setTestingAll(false);
   };
 
   const activeKey    = poolStatus?.keys?.find((k: any) => k.available);
@@ -570,6 +593,72 @@ function AIProviderSection() {
           </View>
         );
       })}
+
+      {/* ── Test All Keys button (only when keys exist) ── */}
+      {hasKeys && (
+        <View style={ta.wrap}>
+          <Pressable
+            style={[ta.btn, { borderColor: testingAll ? "#F59E0B66" : "#F59E0B", opacity: testingAll ? 0.7 : 1 }]}
+            onPress={handleTestAll}
+            disabled={testingAll}
+          >
+            {testingAll
+              ? <ActivityIndicator size="small" color="#F59E0B" />
+              : <Feather name="check-circle" size={14} color="#F59E0B" />
+            }
+            <Text style={[ta.btnTxt, { color: "#F59E0B" }]}>
+              {testingAll ? "جارٍ اختبار المفاتيح..." : "اختبر جميع المفاتيح الآن"}
+            </Text>
+            {testAllSum && !testingAll && (
+              <View style={[ta.badge, { backgroundColor: testAllSum.failed === 0 ? "#22C55E20" : "#EF444420", borderColor: testAllSum.failed === 0 ? "#22C55E44" : "#EF444444" }]}>
+                <Text style={[ta.badgeTxt, { color: testAllSum.failed === 0 ? "#22C55E" : "#EF4444" }]}>
+                  {testAllSum.ok}/{testAllSum.total}
+                </Text>
+              </View>
+            )}
+          </Pressable>
+
+          {testAllRes && testAllRes.length > 0 && (
+            <View style={[ta.resultsWrap, { borderColor: "#F59E0B22", backgroundColor: "#F59E0B08" }]}>
+              {testAllRes.map((item, i) => {
+                const pInfo = AI_PROVIDERS.find(p => p.id === item.provider);
+                return (
+                  <View key={i} style={[ta.resultRow, i < testAllRes.length - 1 && { borderBottomWidth: 1, borderBottomColor: "#ffffff08" }]}>
+                    <View style={[ta.resultDot, { backgroundColor: item.ok ? "#22C55E" : "#EF4444" }]} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={[ta.resultLabel, { color: colors.foreground }]} numberOfLines={1}>
+                        {item.label}
+                      </Text>
+                      <Text style={[ta.resultSub, { color: colors.mutedForeground }]} numberOfLines={1}>
+                        {pInfo?.label ?? item.provider} · {item.model}
+                      </Text>
+                    </View>
+                    <View style={{ alignItems: "flex-end", gap: 3 }}>
+                      <Text style={[ta.resultStatus, { color: item.ok ? "#22C55E" : "#EF4444" }]}>
+                        {item.ok ? "✅ يعمل" : "❌ خطأ"}
+                      </Text>
+                      {item.latency_ms != null && (
+                        <Text style={[ta.resultLatency, { color: item.ok ? "#22C55E99" : "#EF444499" }]}>
+                          {item.latency_ms}ms
+                        </Text>
+                      )}
+                      {!item.ok && item.error && (
+                        <Text style={[ta.resultErr, { color: "#EF444499" }]} numberOfLines={1}>
+                          {item.error}
+                        </Text>
+                      )}
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+          )}
+
+          {testAllRes && testAllRes.length === 0 && !testingAll && (
+            <Text style={[ta.emptyTxt, { color: colors.mutedForeground }]}>لا توجد مفاتيح مخزنة للاختبار</Text>
+          )}
+        </View>
+      )}
 
       {resetMsg ? (
         <Text style={[ap.msg, { color: resetMsg.startsWith("✅") ? colors.primary : colors.destructive }]}>{resetMsg}</Text>
@@ -853,6 +942,23 @@ const ap = StyleSheet.create({
   providerBtnWide:   { flex: 1, flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10 },
   providerBtnSub:    { fontSize: 9, marginTop: 1 },
   hint:              { fontSize: 10, marginTop: 2, marginLeft: 2, color: "#888" },
+});
+
+const ta = StyleSheet.create({
+  wrap:          { gap: 8 },
+  btn:           { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, height: 46, borderRadius: 12, borderWidth: 1.5, paddingHorizontal: 16 },
+  btnTxt:        { fontSize: 13, fontWeight: "700", flex: 1, textAlign: "center" },
+  badge:         { paddingHorizontal: 10, paddingVertical: 3, borderRadius: 20, borderWidth: 1 },
+  badgeTxt:      { fontSize: 12, fontWeight: "800" },
+  resultsWrap:   { borderRadius: 12, borderWidth: 1, overflow: "hidden" },
+  resultRow:     { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 12, paddingVertical: 10 },
+  resultDot:     { width: 8, height: 8, borderRadius: 4, flexShrink: 0 },
+  resultLabel:   { fontSize: 13, fontWeight: "700" },
+  resultSub:     { fontSize: 10, marginTop: 1 },
+  resultStatus:  { fontSize: 12, fontWeight: "700" },
+  resultLatency: { fontSize: 10, fontWeight: "600" },
+  resultErr:     { fontSize: 10, maxWidth: 120 },
+  emptyTxt:      { fontSize: 12, textAlign: "center", paddingVertical: 8 },
 });
 
 // ─── Exchange API section ─────────────────────────────────────────────────────
