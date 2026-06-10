@@ -84,6 +84,7 @@ externalPort = 3002
 [userenv.shared]
 SUPABASE_URL = "https://fnixiuzcdfxkpsurgoju.supabase.co"
 SUPABASE_PROJECT_REF = "fnixiuzcdfxkpsurgoju"
+QUANTOM_DB_URL_HINT = "see backend/.env or Render dashboard"
 
 [nix]
 channel = "stable-25_05"
