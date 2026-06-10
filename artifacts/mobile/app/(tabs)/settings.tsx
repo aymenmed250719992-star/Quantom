@@ -2041,6 +2041,207 @@ function DatabaseUrlPanel() {
 // ─────────────────────────────────────────────────────────────────────────────
 //  Supabase Panel
 // ─────────────────────────────────────────────────────────────────────────────
+function HuggingFacePanel() {
+  const colors  = useColors();
+  const [token,   setToken]   = useState("");
+  const [status,  setStatus]  = useState<"idle"|"loading"|"ok"|"err">("idle");
+  const [hfUser,  setHfUser]  = useState("");
+  const [msg,     setMsg]     = useState("");
+  const [testing, setTesting] = useState(false);
+  const [saving,  setSaving]  = useState(false);
+  const [runRes,  setRunRes]  = useState("");
+
+  // Load current connection status on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch(`${getApiBase()}/hf/status`, { signal: AbortSignal.timeout(8000) });
+        const d = await r.json();
+        if (d.connected) {
+          setStatus("ok");
+          setHfUser(d.username ?? "");
+          setMsg(d.message ?? "متصل");
+        } else {
+          setStatus("idle");
+        }
+      } catch { /* offline */ }
+    })();
+  }, []);
+
+  const handleTest = async () => {
+    if (!token.trim()) { setMsg("❌ أدخل التوكن أولاً"); return; }
+    setTesting(true); setMsg("⏳ جارٍ الاختبار...");
+    try {
+      const r = await fetch(`${getApiBase()}/hf/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: token.trim() }),
+        signal: AbortSignal.timeout(12000),
+      });
+      const d = await r.json();
+      setStatus(d.ok ? "ok" : "err");
+      setHfUser(d.ok ? (d.username ?? "") : "");
+      setMsg(d.message ?? "");
+      Haptics.notificationAsync(d.ok ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Error);
+    } catch (e: any) { setStatus("err"); setMsg(`❌ ${e.message}`); }
+    setTesting(false);
+  };
+
+  const handleSave = async () => {
+    if (!token.trim()) { setMsg("❌ أدخل التوكن أولاً"); return; }
+    setSaving(true);
+    try {
+      const r = await fetch(`${getApiBase()}/hf/save-token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: token.trim() }),
+        signal: AbortSignal.timeout(10000),
+      });
+      const d = await r.json();
+      setMsg(d.message ?? (d.ok ? "✅ تم الحفظ" : "❌ فشل"));
+      if (d.ok) setStatus("ok");
+      Haptics.notificationAsync(d.ok ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Error);
+    } catch (e: any) { setMsg(`❌ ${e.message}`); }
+    setSaving(false);
+  };
+
+  const handleQuickTest = async (skill: string, params: string) => {
+    setRunRes("⏳ جارٍ التنفيذ...");
+    try {
+      const r = await fetch(`${getApiBase()}/hf/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skill, params }),
+        signal: AbortSignal.timeout(20000),
+      });
+      const d = await r.json();
+      setRunRes(d.display ?? JSON.stringify(d).slice(0, 300));
+    } catch (e: any) { setRunRes(`❌ ${e.message}`); }
+  };
+
+  const HF_BLUE = "#FF6B35";
+
+  return (
+    <View style={[s.card, { backgroundColor: colors.card, borderColor: colors.border }]}>
+      {/* Status header */}
+      <View style={[s.row, { marginBottom: 12 }]}>
+        <View style={s.rowLeft}>
+          <View style={[s.rowIcon, { backgroundColor: `${HF_BLUE}18` }]}>
+            <Feather name="globe" size={17} color={HF_BLUE} />
+          </View>
+          <View>
+            <Text style={[s.rowLabel, { color: colors.foreground }]}>HuggingFace</Text>
+            <Text style={[s.rowDesc, { color: colors.mutedForeground }]}>
+              {status === "ok" && hfUser ? `@${hfUser} — متصل ✅` : "خوادم AI + بيانات السوق الخارجية"}
+            </Text>
+          </View>
+        </View>
+        <View style={{
+          paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8,
+          backgroundColor: status === "ok" ? `${HF_BLUE}22` : status === "err" ? "#EF444422" : colors.muted,
+        }}>
+          <Text style={{ fontSize: 11, fontWeight: "700",
+            color: status === "ok" ? HF_BLUE : status === "err" ? "#EF4444" : colors.mutedForeground }}>
+            {status === "loading" ? "..." : status === "ok" ? "متصل" : status === "err" ? "خطأ" : "غير مضبوط"}
+          </Text>
+        </View>
+      </View>
+
+      {/* What it enables */}
+      <View style={{ backgroundColor: `${HF_BLUE}0D`, borderRadius: 10, padding: 10, marginBottom: 12, gap: 4 }}>
+        <Text style={{ fontSize: 10, fontWeight: "700", color: HF_BLUE, marginBottom: 3 }}>يمكّن البوت من:</Text>
+        {[
+          "🌐 جلب أسعار العملات الفورية (BTC/ETH/...)",
+          "😱 مؤشر الخوف والطمع الآن",
+          "📊 تحليل مشاعر الأخبار بـ AI",
+          "🚀 استدعاء أي Space خارجي على HuggingFace",
+          "📡 جلب بيانات من أي API مجاني",
+        ].map((item, i) => (
+          <Text key={i} style={{ fontSize: 11, color: colors.foreground }}>{item}</Text>
+        ))}
+      </View>
+
+      {/* Token input */}
+      <Text style={{ fontSize: 11, color: colors.mutedForeground, marginBottom: 6 }}>
+        توكن HuggingFace (هويتك: mstuv23-quantom-v2 محفوظ بالفعل):
+      </Text>
+      <View style={{ flexDirection: "row", gap: 8, marginBottom: 10 }}>
+        <TextInput
+          value={token}
+          onChangeText={setToken}
+          placeholder="hf_xxxxxxxxxxxxxxxx"
+          placeholderTextColor={colors.mutedForeground}
+          autoCapitalize="none"
+          autoCorrect={false}
+          secureTextEntry
+          style={{
+            flex: 1, height: 40, borderRadius: 10, borderWidth: 1,
+            borderColor: colors.border, backgroundColor: colors.muted,
+            paddingHorizontal: 12, fontSize: 12, color: colors.foreground,
+          }}
+        />
+        <Pressable
+          onPress={handleTest}
+          disabled={testing}
+          style={{ height: 40, paddingHorizontal: 14, borderRadius: 10, alignItems: "center",
+            justifyContent: "center", backgroundColor: `${HF_BLUE}18`, borderWidth: 1, borderColor: `${HF_BLUE}44` }}
+        >
+          {testing ? <ActivityIndicator size="small" color={HF_BLUE} />
+            : <Text style={{ fontSize: 12, fontWeight: "700", color: HF_BLUE }}>اختبار</Text>}
+        </Pressable>
+      </View>
+
+      <Pressable
+        onPress={handleSave}
+        disabled={saving || !token.trim()}
+        style={{ height: 40, borderRadius: 10, alignItems: "center", justifyContent: "center",
+          backgroundColor: token.trim() ? HF_BLUE : colors.muted, marginBottom: 10 }}
+      >
+        {saving ? <ActivityIndicator size="small" color="#fff" />
+          : <Text style={{ fontSize: 13, fontWeight: "700", color: token.trim() ? "#fff" : colors.mutedForeground }}>
+              حفظ التوكن في قاعدة البيانات
+            </Text>}
+      </Pressable>
+
+      {msg ? (
+        <Text style={{ fontSize: 12, color: status === "ok" ? HF_BLUE : "#EF4444", marginBottom: 10, textAlign: "center" }}>
+          {msg}
+        </Text>
+      ) : null}
+
+      {/* Quick test buttons */}
+      <Text style={{ fontSize: 10, fontWeight: "700", color: colors.mutedForeground, marginBottom: 6, letterSpacing: 0.8 }}>
+        اختبر الاتصال الخارجي:
+      </Text>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: runRes ? 10 : 0 }}>
+        {[
+          { label: "💰 سعر BTC",  skill: "web_fetch", params: "bitcoin_price" },
+          { label: "😱 خوف/طمع", skill: "web_fetch", params: "crypto_fear"   },
+          { label: "🏆 أفضل 5",   skill: "web_fetch", params: "top_coins"     },
+          { label: "🌍 السوق الكلي", skill: "web_fetch", params: "btc_dominance" },
+        ].map((btn, i) => (
+          <Pressable
+            key={i}
+            onPress={() => handleQuickTest(btn.skill, btn.params)}
+            style={{ borderRadius: 8, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 5,
+              backgroundColor: `${HF_BLUE}0D`, borderColor: `${HF_BLUE}33` }}
+          >
+            <Text style={{ fontSize: 11, fontWeight: "600", color: HF_BLUE }}>{btn.label}</Text>
+          </Pressable>
+        ))}
+      </View>
+
+      {runRes ? (
+        <View style={{ backgroundColor: colors.muted, borderRadius: 10, padding: 10, marginTop: 4 }}>
+          <Text style={{ fontSize: 12, color: colors.foreground, lineHeight: 18, fontFamily: "monospace" }}>
+            {runRes}
+          </Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 function SupabasePanel() {
   const colors  = useColors();
   const [status, setStatus]   = useState<"idle"|"loading"|"ok"|"err">("idle");
@@ -2758,6 +2959,15 @@ export default function SettingsScreen() {
 
       {/* ══ Server Pool ══ */}
       <ServerPoolPanel />
+
+      {/* ══ HuggingFace Section ══ */}
+      <View style={s.section}>
+        <SectionHeader
+          title="🤗 HUGGINGFACE — خوادم خارجية"
+          subtitle="أعطِ البوت توكن HuggingFace ليتصل بنماذج AI خارجية ويجلب بيانات السوق تلقائياً"
+        />
+        <HuggingFacePanel />
+      </View>
 
       {/* ══ Supabase Section ══ */}
       <View style={s.section}>

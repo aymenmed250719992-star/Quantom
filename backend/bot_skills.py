@@ -26,6 +26,10 @@ SKILL_REGISTRY: dict[str, str] = {
     "risk_check":        "فحص مستوى المخاطرة الحالي وتقديم توصيات",
     "explain_trade":     "شرح منطق صفقة معينة بالتفصيل",
     "learning_summary":  "ملخص ما تعلّمه البوت حتى الآن",
+    # ── خوادم خارجية ─────────────────────────────────────────────────────────
+    "hf_inference":      "تشغيل نموذج AI على HuggingFace (تحليل مشاعر، ترجمة، تصنيف...)",
+    "hf_space":          "استدعاء أي Space على HuggingFace لتنفيذ مهمة خارجية",
+    "web_fetch":         "جلب بيانات من أي رابط خارجي (أسعار، أخبار، APIs مجانية)",
 }
 
 
@@ -558,6 +562,191 @@ async def skill_market_scan(db, params: str = "") -> dict[str, Any]:
 # Skill Dispatcher
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Skill: HF Inference — تشغيل نموذج على HuggingFace
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def skill_hf_inference(db, params: str) -> dict[str, Any]:
+    """
+    يشغّل نموذج AI على HuggingFace Inference API.
+    params: "model=sentiment,text=البيتكوين سيرتفع"
+            أو "sentiment: النص" أو "summarize: النص"
+    """
+    from hf_client import hf_inference, RECOMMENDED_MODELS, analyze_sentiment
+
+    params = params.strip()
+    model = "sentiment"
+    text  = params
+
+    # Parse "model=X,text=Y" or "task: text"
+    if "model=" in params:
+        for part in params.split(","):
+            part = part.strip()
+            if part.startswith("model="):
+                model = part[6:].strip()
+            elif part.startswith("text="):
+                text = part[5:].strip()
+    elif ":" in params:
+        parts = params.split(":", 1)
+        model = parts[0].strip()
+        text  = parts[1].strip()
+
+    if not text:
+        return {"ok": False, "skill": "hf_inference", "display": "❌ يلزم نص للتحليل"}
+
+    # Use quick sentiment helper
+    if model.lower() in ("sentiment", "مشاعر"):
+        result_str = await analyze_sentiment(text, db)
+        return {
+            "ok": True, "skill": "hf_inference",
+            "model": RECOMMENDED_MODELS.get("sentiment", "sentiment"),
+            "display": f"📊 تحليل المشاعر:\n«{text[:80]}»\n→ {result_str}",
+        }
+
+    result = await hf_inference(model, text, db=db)
+    if not result["ok"]:
+        return {"ok": False, "skill": "hf_inference", "display": f"❌ {result.get('error', 'فشل')}"}
+
+    raw = result.get("result", "")
+    display_result = str(raw)[:500] if not isinstance(raw, str) else raw[:500]
+    return {
+        "ok": True, "skill": "hf_inference",
+        "model": result.get("model", model),
+        "display": f"🤗 نتيجة {model}:\n{display_result}",
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Skill: HF Space — استدعاء Space خارجي
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def skill_hf_space(db, params: str) -> dict[str, Any]:
+    """
+    يستدعي HuggingFace Space API.
+    params: "space_id=owner/name,data=النص"
+            أو "owner/name: البيانات"
+    """
+    from hf_client import hf_space_call
+
+    params = params.strip()
+    space_id = ""
+    data_val  = ""
+    api_name  = "/predict"
+
+    if "space_id=" in params or "space=" in params:
+        for part in params.split(","):
+            part = part.strip()
+            if part.startswith(("space_id=", "space=")):
+                space_id = part.split("=", 1)[1].strip()
+            elif part.startswith("data="):
+                data_val = part[5:].strip()
+            elif part.startswith("api="):
+                api_name = part[4:].strip()
+    elif "/" in params:
+        parts = params.split(":", 1)
+        space_id = parts[0].strip()
+        data_val = parts[1].strip() if len(parts) > 1 else ""
+
+    if not space_id:
+        return {"ok": False, "skill": "hf_space", "display": "❌ يلزم تحديد Space ID مثل: owner/name"}
+
+    result = await hf_space_call(space_id, api_name=api_name, data=[data_val] if data_val else [], db=db)
+    if not result["ok"]:
+        return {"ok": False, "skill": "hf_space", "display": f"❌ تعذّر الاتصال بـ {space_id}: {result.get('error', '')}"}
+
+    raw = result.get("result", "")
+    display_result = (raw.get("data", raw) if isinstance(raw, dict) else raw)
+    return {
+        "ok": True, "skill": "hf_space",
+        "space": space_id,
+        "display": f"🚀 نتيجة Space {space_id}:\n{str(display_result)[:600]}",
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Skill: Web Fetch — جلب بيانات من رابط خارجي
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def skill_web_fetch(params: str) -> dict[str, Any]:
+    """
+    يجلب بيانات من أي URL خارجي مجاناً بلا مفتاح.
+    params: URL كامل أو اسم مختصر (bitcoin_price, eth_price, crypto_news)
+    """
+    from hf_client import web_fetch, fetch_crypto_price
+
+    params = params.strip()
+
+    # Shortcuts for common tasks
+    shortcuts = {
+        "bitcoin_price":  "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true",
+        "eth_price":      "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd&include_24hr_change=true",
+        "bnb_price":      "https://api.coingecko.com/api/v3/simple/price?ids=binancecoin&vs_currencies=usd&include_24hr_change=true",
+        "crypto_fear":    "https://api.alternative.me/fng/?limit=1",
+        "btc_dominance":  "https://api.coingecko.com/api/v3/global",
+        "top_coins":      "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=5&page=1",
+    }
+
+    url = shortcuts.get(params.lower().replace(" ", "_"), params)
+
+    if not url.startswith("http"):
+        return {"ok": False, "skill": "web_fetch", "display": f"❌ رابط غير صحيح: {params}"}
+
+    result = await web_fetch(url)
+    if not result["ok"]:
+        return {"ok": False, "skill": "web_fetch", "display": f"❌ فشل جلب البيانات: {result.get('error', '')}"}
+
+    content = result.get("content", "")
+
+    # Format common responses nicely
+    display = ""
+    if "coingecko" in url and "simple/price" in url:
+        try:
+            prices = []
+            for coin, data in content.items():
+                chg = data.get("usd_24h_change", 0) or 0
+                arrow = "▲" if chg >= 0 else "▼"
+                prices.append(f"{coin.upper()}: ${data['usd']:,.2f}  {arrow}{abs(chg):.2f}%")
+            display = "💰 أسعار العملات:\n" + "\n".join(prices)
+        except Exception:
+            display = str(content)[:500]
+    elif "fng" in url:
+        try:
+            fng = content["data"][0]
+            display = f"😱 مؤشر الخوف والطمع:\n{fng['value']} — {fng['value_classification']}"
+        except Exception:
+            display = str(content)[:500]
+    elif "global" in url:
+        try:
+            d = content.get("data", {})
+            btc_dom = d.get("market_cap_percentage", {}).get("btc", 0)
+            total   = d.get("total_market_cap", {}).get("usd", 0)
+            display = f"🌍 السوق الكلي:\nهيمنة BTC: {btc_dom:.1f}%\nإجمالي السوق: ${total/1e9:.1f}B"
+        except Exception:
+            display = str(content)[:500]
+    elif "markets" in url:
+        try:
+            lines = []
+            for c in content[:5]:
+                chg = c.get("price_change_percentage_24h", 0) or 0
+                arrow = "▲" if chg >= 0 else "▼"
+                lines.append(f"{c['symbol'].upper()}: ${c['current_price']:,.4g}  {arrow}{abs(chg):.1f}%")
+            display = "🏆 أفضل 5 عملات:\n" + "\n".join(lines)
+        except Exception:
+            display = str(content)[:500]
+    else:
+        display = f"📡 البيانات من {url}:\n{str(content)[:500]}"
+
+    return {
+        "ok": True, "skill": "web_fetch",
+        "url": url,
+        "display": display,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dispatch
+# ─────────────────────────────────────────────────────────────────────────────
+
 async def dispatch_skill(skill_name: str, params: str, db, mem=None) -> dict[str, Any]:
     """
     ينفّذ المهارة المطلوبة ويُعيد النتيجة.
@@ -583,6 +772,12 @@ async def dispatch_skill(skill_name: str, params: str, db, mem=None) -> dict[str
             return await skill_market_scan(db, params)
         elif name == "learning_summary":
             return await skill_learning_summary(db)
+        elif name == "hf_inference":
+            return await skill_hf_inference(db, params)
+        elif name == "hf_space":
+            return await skill_hf_space(db, params)
+        elif name == "web_fetch":
+            return await skill_web_fetch(params)
         else:
             return {
                 "ok": False, "skill": name,

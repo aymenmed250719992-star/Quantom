@@ -2150,6 +2150,76 @@ async def trigger_auto_learning():
         return {"ok": False, "error": str(e)}
 
 
+@router.get("/hf/status")
+async def hf_status():
+    """حالة اتصال HuggingFace — يختبر التوكن المحفوظ."""
+    from hf_client import test_hf_connection, invalidate_token_cache
+    invalidate_token_cache()
+    result = await test_hf_connection(db)
+    return result
+
+
+@router.post("/hf/test")
+async def hf_test(body: dict = None):
+    """يختبر توكن HuggingFace محدد قبل حفظه."""
+    from hf_client import test_hf_connection, invalidate_token_cache
+    import httpx, os
+    token = (body or {}).get("token", "").strip()
+    if not token:
+        return {"ok": False, "message": "أدخل التوكن أولاً"}
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get("https://huggingface.co/api/whoami-v2", headers=headers)
+            if r.status_code == 200:
+                info = r.json()
+                return {
+                    "ok": True,
+                    "username": info.get("name", "unknown"),
+                    "plan": info.get("type", "free"),
+                    "message": f"✅ توكن صحيح — مرحباً @{info.get('name', 'unknown')}",
+                }
+            return {"ok": False, "message": "❌ التوكن غير صحيح أو منتهي الصلاحية"}
+    except Exception as e:
+        return {"ok": False, "message": f"❌ خطأ في الاتصال: {e}"}
+
+
+@router.post("/hf/save-token")
+async def hf_save_token(body: dict = None):
+    """يحفظ توكن HuggingFace في DB (ai_keys table)."""
+    from hf_client import invalidate_token_cache
+    token = (body or {}).get("token", "").strip()
+    if not token:
+        return {"ok": False, "message": "التوكن فارغ"}
+    try:
+        await db.delete_ai_key("huggingface")
+    except Exception:
+        pass
+    try:
+        await db.add_ai_key(
+            provider="huggingface",
+            api_key=token,
+            label="HuggingFace Token",
+            base_url="https://api-inference.huggingface.co",
+            model_name="",
+        )
+        invalidate_token_cache()
+        return {"ok": True, "message": "✅ تم حفظ توكن HuggingFace"}
+    except Exception as e:
+        return {"ok": False, "message": f"❌ فشل الحفظ: {e}"}
+
+
+@router.post("/hf/run")
+async def hf_run_skill(body: dict = None):
+    """تشغيل مهارة HF مباشرة: web_fetch, hf_inference, hf_space."""
+    from bot_skills import dispatch_skill
+    body = body or {}
+    skill = body.get("skill", "web_fetch")
+    params = body.get("params", "bitcoin_price")
+    result = await dispatch_skill(skill, params, db)
+    return result
+
+
 @router.get("/agent/memory/search")
 async def search_agent_memory(q: str = "", category: str = ""):
     """Search across lessons and knowledge."""
