@@ -22,8 +22,15 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import AsyncStorage from "@react-native-async-storage/async-storage";
+
 import { getApiBase, safeJson } from "@/constants/api";
 import { useColors } from "@/hooks/useColors";
+
+// ── Local persistence keys ─────────────────────────────────────────────────
+const CHAT_STORAGE_KEY   = "quantom_brain_chat_v1";
+const MEMORY_BACKUP_KEY  = "quantom_memory_backup_v1";
+const MAX_LOCAL_MESSAGES = 200;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -220,6 +227,22 @@ export default function BrainScreen() {
     setTimeout(() => setMsgMap(p => { const n = { ...p }; delete n[key]; return n; }), 3000);
   };
 
+  // ── Save chat messages to phone local storage ─────────────────────────────
+  const saveChatLocally = useCallback(async (msgs: BrainMessage[]) => {
+    try {
+      const toSave = msgs.filter(m => m.id !== "brain_welcome").slice(0, MAX_LOCAL_MESSAGES);
+      await AsyncStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(toSave));
+    } catch { /* ignore */ }
+  }, []);
+
+  // ── Save memory snapshot to phone (backup) ────────────────────────────────
+  const backupMemoryLocally = useCallback(async (memSnapshot: any) => {
+    try {
+      const backup = { ts: new Date().toISOString(), data: memSnapshot };
+      await AsyncStorage.setItem(MEMORY_BACKUP_KEY, JSON.stringify(backup));
+    } catch { /* ignore */ }
+  }, []);
+
   const load = useCallback(async () => {
     try {
       const r = await fetch(`${getApiBase()}/agent/memory`);
@@ -227,35 +250,48 @@ export default function BrainScreen() {
       if (d) {
         setData(d);
         if (d?.strategy?.goal) setGoalInput(d.strategy.goal);
+        backupMemoryLocally(d);
       }
     } catch { /* ignore */ }
     setLoading(false);
     setRefreshing(false);
-  }, []);
+  }, [backupMemoryLocally]);
 
-  // ── Load brain conversation history from DB ───────────────────────────────
+  // ── Load brain conversation history: DB first, local fallback ─────────────
   useEffect(() => {
     (async () => {
+      // 1. Try local storage first (instant, offline)
       try {
-        const r = await fetch(`${getApiBase()}/conversations?screen=brain&limit=60`);
-        const d = await safeJson(r);
-        if (d) {
-          if (d.messages && d.messages.length > 0) {
-            const hist: BrainMessage[] = d.messages.map((m: any) => ({
-              id: m.id ?? makeBrainId(),
-              role: m.role as "user" | "assistant",
-              content: m.content,
-              provider: m.provider || undefined,
-              executed_command: m.metadata?.executed_command ?? null,
-              timestamp: m.created_at ?? new Date().toISOString(),
-              metadata: m.metadata ?? undefined,
-            }));
-            setChatMessages([BRAIN_WELCOME, ...hist]);
+        const local = await AsyncStorage.getItem(CHAT_STORAGE_KEY);
+        if (local) {
+          const parsed: BrainMessage[] = JSON.parse(local);
+          if (parsed.length > 0) {
+            setChatMessages([BRAIN_WELCOME, ...parsed]);
           }
         }
       } catch { /* ignore */ }
+
+      // 2. Then try server (richer, more complete)
+      try {
+        const r = await fetch(`${getApiBase()}/conversations?screen=brain&limit=60`);
+        const d = await safeJson(r);
+        if (d?.messages?.length > 0) {
+          const hist: BrainMessage[] = d.messages.map((m: any) => ({
+            id: m.id ?? makeBrainId(),
+            role: m.role as "user" | "assistant",
+            content: m.content,
+            provider: m.provider || undefined,
+            executed_command: m.metadata?.executed_command ?? null,
+            timestamp: m.created_at ?? new Date().toISOString(),
+            metadata: m.metadata ?? undefined,
+          }));
+          setChatMessages([BRAIN_WELCOME, ...hist]);
+          // Mirror server data to local storage
+          await saveChatLocally(hist);
+        }
+      } catch { /* offline — local copy already loaded above */ }
     })();
-  }, []);
+  }, [saveChatLocally]);
 
   // ── Quick skill buttons ───────────────────────────────────────────────────
   const QUICK_SKILLS = [
@@ -299,19 +335,28 @@ export default function BrainScreen() {
         executed_command: d?.executed_command ?? null,
         timestamp: new Date().toISOString(),
       };
-      setChatMessages(prev => [botMsg, ...prev]);
+      setChatMessages(prev => {
+        const updated = [botMsg, ...prev];
+        // Save to phone local storage — learning never lost even offline
+        saveChatLocally(updated);
+        return updated;
+      });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      // Refresh memory panel if a command was executed
       if (d?.executed_command) {
         setTimeout(() => load(), 600);
       }
     } catch {
-      setChatMessages(prev => [{
+      const errMsg: BrainMessage = {
         id: makeBrainId(),
         role: "assistant",
-        content: "⚡ تعذّر الاتصال — تأكد من أن البوت يعمل في التطبيق، ثم أعد المحاولة.",
+        content: "⚡ تعذّر الاتصال — الرسائل السابقة محفوظة في هاتفك، التعلّم لم يُفقد.",
         timestamp: new Date().toISOString(),
-      }, ...prev]);
+      };
+      setChatMessages(prev => {
+        const updated = [errMsg, ...prev];
+        saveChatLocally(updated);
+        return updated;
+      });
     }
     setChatLoading(false);
   };
